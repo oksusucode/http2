@@ -8,15 +8,26 @@ import (
 )
 
 func (c *Conn) InitialRecvWindow(streamID uint32) uint32 {
+	if streamID == 0 {
+		return c.connStream.recvFlow.initialWindow()
+	}
 	if stream := c.stream(streamID); stream != nil {
 		return stream.recvFlow.initialWindow()
 	}
 	return 0
 }
 
-func (c *Conn) RecvWindow(streamID uint32) int {
-	if stream := c.stream(streamID); stream != nil {
-		return stream.recvFlow.window()
+func (c *Conn) RecvWindow(streamID uint32) uint32 {
+	var stream *stream
+	if streamID == 0 {
+		stream = c.connStream
+	} else {
+		stream = c.stream(streamID)
+	}
+	if stream != nil {
+		if w := stream.recvFlow.window(); w > 0 {
+			return uint32(w)
+		}
 	}
 	return 0
 }
@@ -187,9 +198,17 @@ func (c *Conn) InitialSendWindow(uint32) uint32 {
 	return atomic.LoadUint32(&c.initialSendWindow)
 }
 
-func (c *Conn) SendWindow(streamID uint32) int {
-	if stream := c.stream(streamID); stream != nil {
-		return stream.sendFlow.window()
+func (c *Conn) SendWindow(streamID uint32) uint32 {
+	var stream *stream
+	if streamID == 0 {
+		stream = c.connStream
+	} else {
+		stream = c.stream(streamID)
+	}
+	if stream != nil {
+		if w := stream.sendFlow.window(); w > 0 {
+			return uint32(w)
+		}
 	}
 	return 0
 }
