@@ -251,6 +251,27 @@ func (f *UnknownFrame) streamID() uint32      { return f.StreamID }
 
 func (f *HeadersFrame) HasPriority() bool { return f.Priority != Priority{} }
 
+func (state StreamState) String() string {
+	switch state {
+	case StateIdle:
+		return "Idle"
+	case StateReservedLocal:
+		return "ReservedLocal"
+	case StateReservedRemote:
+		return "ReservedRemote"
+	case StateOpen:
+		return "Open"
+	case StateHalfClosedLocal:
+		return "HalfClosedLocal"
+	case StateHalfClosedRemote:
+		return "HalfClosedRemote"
+	case StateClosed:
+		return "Closed"
+	default:
+		panic("bad stream state")
+	}
+}
+
 func (h Header) Method() string {
 	return h.get(":method")
 }

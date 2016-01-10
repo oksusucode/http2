@@ -1,12 +1,8 @@
 package http2
 
 import (
-	"container/list"
-	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
-	"time"
 )
 
 type StreamState int32
@@ -33,37 +29,114 @@ type stream struct {
 	parent   *stream
 	children map[uint32]*stream
 
-	recvWindow,
-	recvWindowLowerBound,
-	recvWindowUpperBound,
-	processedBytes int
-
-	sync.Mutex
-	sendWindow,
-	allocated,
-	pendingBytes int
-	pending   *list.List
-	cancelled bool
+	recvFlow *flowController
+	sendFlow *remoteFlowController
 
 	resetSent,
 	resetReceived bool
 
-	closed time.Time
+	wio     chan struct{}
+	werr    chan error
+	closeCh chan struct{}
 }
 
-var ignoreFrame = errors.New("ignored")
+func (s *stream) active() bool {
+	switch StreamState(atomic.LoadInt32((*int32)(&s.state))) {
+	case StateOpen, StateHalfClosedLocal, StateHalfClosedRemote:
+		return true
+	default:
+		return false
+	}
+}
 
-func (s *stream) transition(dir dir, frameType FrameType, endStream bool) (StreamState, error) {
+func (s *stream) writable() bool {
+	switch StreamState(atomic.LoadInt32((*int32)(&s.state))) {
+	case StateOpen, StateHalfClosedRemote:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *stream) setPriority(priority Priority) error {
+	return nil
+}
+
+func (s *stream) close() {
 	for {
 		from := StreamState(atomic.LoadInt32((*int32)(&s.state)))
-		to, ok := dir.transition(from, frameType, endStream)
+		if s.compareAndSwapState(from, StateClosed) {
+			return
+		}
+	}
+}
+
+func (s *stream) local() bool {
+	return s.conn.server == ((s.id & 1) == 0)
+}
+
+func (s *stream) compareAndSwapState(from, to StreamState) bool {
+	if atomic.CompareAndSwapInt32((*int32)(&s.state), int32(from), int32(to)) {
+		switch to {
+		case StateOpen, StateHalfClosedLocal, StateHalfClosedRemote:
+			switch from {
+			case StateIdle, StateReservedLocal, StateReservedRemote:
+				if s.local() {
+					atomic.AddUint32(&s.conn.numStreams, 1)
+				} else {
+					atomic.AddUint32(&s.conn.remote.numStreams, 1)
+				}
+
+				w := int(atomic.LoadUint32(&s.conn.initialRecvWindow))
+				s.recvFlow = &flowController{s: s, win: w, winUpperBound: w, processedWin: w}
+
+				if to != StateHalfClosedLocal {
+					w = int(atomic.LoadUint32(&s.conn.initialSendWindow))
+					s.sendFlow = &remoteFlowController{s: s, winCh: make(chan int, 1)}
+					s.sendFlow.incrementInitialWindow(w)
+				}
+
+				if from == StateIdle {
+					s.conn.addStream(s)
+				}
+			case StateOpen:
+				if to == StateHalfClosedLocal {
+					//
+				}
+			}
+		case StateClosed:
+			switch from {
+			case StateOpen, StateHalfClosedLocal, StateHalfClosedRemote:
+				if s.local() {
+					atomic.AddUint32(&s.conn.numStreams, ^uint32(0))
+				} else {
+					atomic.AddUint32(&s.conn.remote.numStreams, ^uint32(0))
+				}
+			}
+
+			if from != StateClosed {
+				close(s.closeCh)
+				s.conn.removeStream(s)
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func (s *stream) transition(recv bool, frameType FrameType, endStream bool) (StreamState, error) {
+	for {
+		from := StreamState(atomic.LoadInt32((*int32)(&s.state)))
+		to, ok := from.transition(recv, frameType, endStream)
 
 		if !ok {
-			if dir == send {
+			if !recv {
 				if from == StateClosed {
-					if frameType == FrameRSTStream {
-						return from, ignoreFrame
-					}
+
+					// if frameType == FrameRSTStream {
+					// 	return from, ignoreFrame
+					// }
+
 					// An endpoint MUST NOT send frames other than PRIORITY on a closed stream.
 					return from, fmt.Errorf("stream %d already closed", s.id)
 				}
@@ -82,9 +155,11 @@ func (s *stream) transition(dir dir, frameType FrameType, endStream bool) (Strea
 				// receives on closed streams after it has sent a RST_STREAM frame.
 				// An endpoint MAY choose to limit the period over which it ignores
 				// frames and treat frames that arrive after this time as being in error.
-				if time.Since(s.closed) <= time.Duration(5)*time.Second {
-					return from, ignoreFrame
-				}
+
+				// if time.Since(s.closed) <= time.Duration(5)*time.Second {
+				// 	return from, ignoreFrame
+				// }
+
 				return from, StreamError{fmt.Errorf("stream %d already closed", s.id), ErrCodeStreamClosed, s.id}
 			}
 
@@ -106,9 +181,11 @@ func (s *stream) transition(dir dir, frameType FrameType, endStream bool) (Strea
 				// (Section 5.4.1) of type PROTOCOL_ERROR.
 				switch frameType {
 				case FrameRSTStream, FrameWindowUpdate:
-					if time.Since(s.closed) <= time.Duration(5)*time.Second {
-						return from, ignoreFrame
-					}
+
+					// if time.Since(s.closed) <= time.Duration(5)*time.Second {
+					// 	return from, ignoreFrame
+					// }
+
 					return from, ConnError{fmt.Errorf("stream %d already closed", s.id), ErrCodeProtocol}
 				}
 			}
@@ -117,7 +194,7 @@ func (s *stream) transition(dir dir, frameType FrameType, endStream bool) (Strea
 
 		if s.compareAndSwapState(from, to) {
 			if to == StateClosed && frameType == FrameRSTStream {
-				if dir == recv {
+				if recv {
 					s.resetReceived = true
 				} else {
 					s.resetSent = true
@@ -128,99 +205,9 @@ func (s *stream) transition(dir dir, frameType FrameType, endStream bool) (Strea
 	}
 }
 
-func (s *stream) setPriority(priority Priority) error {
-	return nil
-}
-
-func (s *stream) active() bool {
-	switch StreamState(atomic.LoadInt32((*int32)(&s.state))) {
-	case StateOpen, StateHalfClosedLocal, StateHalfClosedRemote:
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *stream) writable() bool {
-	switch StreamState(atomic.LoadInt32((*int32)(&s.state))) {
-	case StateOpen, StateHalfClosedRemote:
-		return !s.cancelled
-	default:
-		return false
-	}
-}
-
-func (s *stream) close() {
-	for {
-		from := StreamState(atomic.LoadInt32((*int32)(&s.state)))
-		if s.compareAndSwapState(from, StateClosed) {
-			return
-		}
-	}
-}
-
-func (s *stream) compareAndSwapState(from, to StreamState) bool {
-	if atomic.CompareAndSwapInt32((*int32)(&s.state), int32(from), int32(to)) {
-		switch to {
-		case StateOpen, StateHalfClosedLocal, StateHalfClosedRemote:
-			switch from {
-			case StateIdle, StateReservedLocal, StateReservedRemote:
-				if s.local() {
-					atomic.AddUint32(&s.conn.numStreams, 1)
-				} else {
-					atomic.AddUint32(&s.conn.remote.numStreams, 1)
-				}
-
-				s.conn.setRecvWindow(s)
-
-				if to != StateHalfClosedLocal {
-					s.conn.setSendWindow(s)
-				}
-			case StateOpen:
-				if to == StateHalfClosedLocal {
-					s.conn.cancelStream(s)
-				}
-			}
-		case StateClosed:
-			switch from {
-			case StateOpen, StateHalfClosedLocal, StateHalfClosedRemote:
-				if s.local() {
-					atomic.AddUint32(&s.conn.numStreams, ^uint32(0))
-				} else {
-					atomic.AddUint32(&s.conn.remote.numStreams, ^uint32(0))
-				}
-			}
-
-			if from != StateClosed {
-				s.closed = time.Now()
-				s.conn.cancelStream(s)
-				s.conn.removeStream(s)
-			}
-		}
-		return true
-	}
-	return false
-}
-
-func (s *stream) local() bool {
-	return localStreamID(s.conn.server, s.id)
-}
-
-func localStreamID(server bool, streamID uint32) bool {
-	return server == ((streamID & 1) == 0)
-}
-
-type dir int
-
-const (
-	recv dir = iota
-	send
-)
-
-func (dir dir) transition(from StreamState, frameType FrameType, endStream bool) (to StreamState, ok bool) {
+func (from StreamState) transition(recv bool, frameType FrameType, endStream bool) (to StreamState, ok bool) {
 	to = from
-
-	if dir == recv {
+	if recv {
 		switch from {
 		case StateIdle:
 			switch frameType {
@@ -319,7 +306,7 @@ func (dir dir) transition(from StreamState, frameType FrameType, endStream bool)
 	if endStream {
 		switch to {
 		case StateOpen:
-			if dir == recv {
+			if recv {
 				to = StateHalfClosedRemote
 			} else {
 				to = StateHalfClosedLocal

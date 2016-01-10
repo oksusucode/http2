@@ -2,263 +2,487 @@ package http2
 
 import (
 	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 )
 
+func (c *Conn) InitialRecvWindow(streamID uint32) uint32 {
+	if stream := c.stream(streamID); stream != nil {
+		return stream.recvFlow.initialWindow()
+	}
+	return 0
+}
+
+func (c *Conn) RecvWindow(streamID uint32) int {
+	if stream := c.stream(streamID); stream != nil {
+		return stream.recvFlow.window()
+	}
+	return 0
+}
+
 func (c *Conn) setInitialRecvWindow(n uint32) error {
-	delta := int(n) - int(c.initialRecvWindow)
+	o := atomic.LoadUint32(&c.initialRecvWindow)
+	delta := int(n) - int(o)
 	if delta == 0 {
 		return nil
 	}
-	c.initialRecvWindow = n
+	atomic.StoreUint32(&c.initialRecvWindow, n)
 
 	var errors StreamErrorList
 
-	c.handleStreams(func(stream *stream) error {
+	c.streamL.RLock()
+	defer c.streamL.RUnlock()
+
+	for _, stream := range c.streams {
 		if stream.active() {
-			if err := stream.updateRecvWindow(delta); err != nil {
+			if err := stream.recvFlow.incrementInitialWindow(delta); err != nil {
 				errors.add(stream.id, ErrCodeFlowControl, err)
-			} else {
-				stream.updateInitialRecvWindow(delta)
 			}
 		}
-		return nil
-	})
+	}
 
 	return errors.Err()
 }
 
-func (c *Conn) setRecvWindow(stream *stream) {
-	stream.recvWindow = int(c.initialRecvWindow)
-	stream.recvWindowUpperBound = stream.recvWindow
-	stream.processedBytes = stream.recvWindow
+type flowController struct {
+	sync.RWMutex
+	s *stream
+	win,
+	winLowerBound,
+	winUpperBound,
+	processedWin int
 }
 
-func (c *Conn) recvData(stream *stream, dataFrame *DataFrame) error {
-	dataLen := dataFrame.DataLen + int(dataFrame.PadLen)
-	if err := c.connStream.recvData(dataLen); err != nil {
-		return err
-	}
-	if stream != nil && stream.active() {
-		return stream.recvData(dataLen)
-	} else if dataLen > 0 {
-		return c.connStream.returnProcessedBytes(dataLen)
-	}
-	return nil
+func (c *flowController) initialWindow() uint32 {
+	c.RLock()
+	win := c.winUpperBound
+	c.RUnlock()
+
+	return uint32(win)
 }
 
-func (c *Conn) returnProcessedBytes(stream *stream, n int) error {
+func (c *flowController) incrementInitialWindow(delta int) error {
+	if c.s.id == 0 {
+		return nil
+	}
+
+	c.Lock()
+	defer c.Unlock()
+
+	err := c.updateWindow(delta)
+	if err == nil {
+		c.updateInitialWindow(delta)
+	}
+	return err
+}
+
+func (c *flowController) window() int {
+	c.RLock()
+	win := c.win
+	c.RUnlock()
+
+	return win
+}
+
+func (c *flowController) incrementWindow(delta int) error {
+	c.Lock()
+	defer c.Unlock()
+
+	c.updateInitialWindow(delta)
+
+	return c.windowUpdate()
+}
+
+func (c *flowController) consumeBytes(n int) error {
 	if n <= 0 {
 		return nil
 	}
-	if stream != nil && stream.active() {
-		if err := c.connStream.returnProcessedBytes(n); err != nil {
+
+	c.Lock()
+	defer c.Unlock()
+
+	if c.s.id != 0 {
+		if err := c.s.conn.connStream.recvFlow.consumeBytes(n); err != nil {
 			return err
 		}
-		return stream.returnProcessedBytes(n)
+	}
+	c.win -= n
+	if c.win < c.winLowerBound {
+		if c.s.id == 0 {
+			return ConnError{errors.New("window size limit exceeded"), ErrCodeFlowControl}
+		}
+		return StreamError{errors.New("window size limit exceeded"), ErrCodeFlowControl, c.s.id}
 	}
 	return nil
 }
 
-func (c *Conn) setInitialSendWindow(n uint32) error {
-	c.flowCond.L.Lock()
-	defer c.flowCond.L.Unlock()
+func (c *flowController) returnBytes(delta int) error {
+	c.Lock()
+	defer c.Unlock()
 
-	delta := int(n) - int(c.initialSendWindow)
-	if delta == 0 {
-		return nil
-	}
-	c.initialSendWindow = n
-
-	var errors StreamErrorList
-
-	c.handleStreams(func(stream *stream) error {
-		if stream.writable() {
-			if err := stream.updateSendWindow(delta); err != nil {
-				errors.add(stream.id, ErrCodeFlowControl, err)
-			}
+	if c.s.id != 0 {
+		if err := c.s.conn.connStream.recvFlow.returnBytes(delta); err != nil {
+			return err
 		}
-		return nil
-	})
-
-	if err := errors.Err(); err != nil {
-		return err
 	}
-
-	if delta > 0 {
-		c.flowCond.Broadcast()
-	}
-
-	return nil
-}
-
-func (c *Conn) setSendWindow(stream *stream) {
-	c.flowCond.L.Lock()
-	stream.sendWindow = int(c.initialSendWindow)
-	c.flowCond.L.Unlock()
-}
-
-func (c *Conn) incrementWindow(stream *stream, delta int) error {
-	c.flowCond.L.Lock()
-	defer c.flowCond.L.Unlock()
-
-	if err := stream.updateSendWindow(delta); err != nil {
-		if stream.id == 0 {
-			return ConnError{err, ErrCodeFlowControl}
-		}
-		return StreamError{err, ErrCodeFlowControl, stream.id}
-	}
-
-	c.flowCond.Broadcast()
-
-	return nil
-}
-
-func (c *Conn) allocateBytes(stream *stream, n int) (int, error) {
-	c.flowCond.L.Lock()
-	defer c.flowCond.L.Unlock()
-
-	for {
-		// TODO: verify conn closing
-
-		if !stream.writable() {
-			return 0, errors.New("xxx")
-		}
-
-		allocated := stream.sendWindow
-		if allocated > c.connStream.sendWindow {
-			allocated = c.connStream.sendWindow
-		}
-		if allocated > 0 {
-			if allocated > n {
-				allocated = n
-			}
-			c.connStream.updateSendWindow(-allocated)
-			stream.updateSendWindow(-allocated)
-
-			return allocated, nil
-		}
-
-		c.flowCond.Wait()
-	}
-}
-
-func (c *Conn) allocateBytesForTree() error {
-
-	// TODO: allocate for priority tree
-
-	return nil
-}
-
-func (c *Conn) enqueueFlowControlledFrame(stream *stream, frame Frame) error {
-	if err := stream.enqueueFrame(frame); err != nil {
-		return err
-	}
-
-	c.flowCond.L.Lock()
-	c.flowCond.Signal()
-	c.flowCond.L.Unlock()
-
-	return nil
-}
-
-func (c *Conn) flushQueuedFramesLoop() {
-
-	// TODO: server-side loop
-
-}
-
-func (c *Conn) cancelStream(stream *stream) {
-	c.flowCond.L.Lock()
-	defer c.flowCond.L.Unlock()
-
-	if !stream.cancelled {
-
-		// TODO: cleanup window
-
-		stream.cancelled = true
-		c.flowCond.Broadcast()
-	}
-}
-
-func (s *stream) recvData(dataLen int) error {
-	if dataLen < 0 {
-		return errors.New("data length must be >= 0")
-	}
-	s.recvWindow -= dataLen
-	if s.recvWindow < s.recvWindowLowerBound {
-		if s.id == 0 {
-			return ConnError{errors.New("window size exceeded"), ErrCodeFlowControl}
-		}
-		return StreamError{errors.New("window size exceeded"), ErrCodeFlowControl, s.id}
-	}
-	return nil
-}
-
-func (s *stream) returnProcessedBytes(delta int) error {
-	if s.processedBytes-delta < s.recvWindow {
-		if s.id == 0 {
+	if c.processedWin-delta < c.win {
+		if c.s.id == 0 {
 			return ConnError{errors.New("attempting to return too many bytes"), ErrCodeInternal}
 		}
-		return StreamError{errors.New("attempting to return too many bytes"), ErrCodeInternal, s.id}
+		return StreamError{errors.New("attempting to return too many bytes"), ErrCodeInternal, c.s.id}
 	}
-	s.processedBytes -= delta
-
-	if s.recvWindowUpperBound <= 0 {
-		return nil
-	}
-
-	const windowUpdateRatio = 0.5
-	threshold := int(float32(s.recvWindowUpperBound) * windowUpdateRatio)
-	if s.processedBytes > threshold {
-		return nil
-	}
-
-	delta = s.recvWindowUpperBound - s.processedBytes
-
-	if err := s.updateRecvWindow(delta); err != nil {
-		return ConnError{errors.New("attempting to return too many bytes"), ErrCodeInternal}
-	}
-	return s.conn.writeFrame(&WindowUpdateFrame{s.id, uint32(delta)}, true)
+	c.processedWin -= delta
+	return c.windowUpdate()
 }
 
-func (s *stream) updateInitialRecvWindow(delta int) {
-	n := s.recvWindowUpperBound + delta
+func (c *flowController) updateWindow(delta int) error {
+	if delta > 0 && maxInitialWindowSize-delta < c.win {
+		return errors.New("window size overflow")
+	}
+	c.win += delta
+	c.processedWin += delta
+	c.winLowerBound = 0
+	if delta < 0 {
+		c.winLowerBound = delta
+	}
+	return nil
+}
+
+func (c *flowController) updateInitialWindow(delta int) {
+	n := c.winUpperBound + delta
 	if n < defaultInitialWindowSize {
 		n = defaultInitialWindowSize
 	}
 	if n > maxInitialWindowSize {
 		n = maxInitialWindowSize
 	}
-	delta = n - s.recvWindowUpperBound
-	s.recvWindowUpperBound += delta
+	delta = n - c.winUpperBound
+	c.winUpperBound += delta
 }
 
-func (s *stream) updateRecvWindow(delta int) error {
-	if delta > 0 && maxInitialWindowSize-delta < s.recvWindow {
-		return errors.New("window size overflow")
+func (c *flowController) windowUpdate() error {
+	if c.winUpperBound <= 0 {
+		return nil
 	}
-	s.recvWindow += delta
-	s.processedBytes += delta
-	s.recvWindowLowerBound = 0
-	if delta < 0 {
-		s.recvWindowLowerBound = delta
+
+	const windowUpdateRatio = 0.5
+
+	threshold := int(float32(c.winUpperBound) * windowUpdateRatio)
+	if c.processedWin > threshold {
+		return nil
 	}
+
+	delta := c.winUpperBound - c.processedWin
+	if err := c.updateWindow(delta); err != nil {
+		return ConnError{errors.New("attempting to return too many bytes"), ErrCodeInternal}
+	}
+
+	c.s.conn.writeQueue.add(&WindowUpdateFrame{c.s.id, uint32(delta)}, true)
+
 	return nil
 }
 
-func (s *stream) enqueueFrame(frame Frame) error {
-	s.Lock()
-	defer s.Unlock()
-
-	// TODO
-
-	return nil
+func (c *Conn) InitialSendWindow(uint32) uint32 {
+	return atomic.LoadUint32(&c.initialSendWindow)
 }
 
-func (s *stream) updateSendWindow(delta int) error {
-	if delta > 0 && maxInitialWindowSize-delta < s.sendWindow {
-		return errors.New("window size overflow")
+func (c *Conn) SendWindow(streamID uint32) int {
+	if stream := c.stream(streamID); stream != nil {
+		return stream.sendFlow.window()
 	}
-	s.sendWindow += delta
+	return 0
+}
+
+func (c *Conn) setInitialSendWindow(n uint32) error {
+	o := atomic.LoadUint32(&c.initialSendWindow)
+	delta := int(n) - int(o)
+	if delta == 0 {
+		return nil
+	}
+	atomic.StoreUint32(&c.initialSendWindow, n)
+
+	var errors StreamErrorList
+
+	c.streamL.RLock()
+	defer c.streamL.RUnlock()
+
+	for _, stream := range c.streams {
+		if stream.writable() {
+			if err := stream.sendFlow.incrementInitialWindow(delta); err != nil {
+				if stream.id == 0 {
+					c.streamL.RUnlock()
+					return err
+				}
+				se := err.(StreamError)
+				errors = append(errors, &se)
+			}
+		}
+	}
+
+	return errors.Err()
+}
+
+type remoteFlowController struct {
+	sync.RWMutex
+	s     *stream
+	win   int
+	winCh chan int
+}
+
+func (c *remoteFlowController) initialWindow() uint32 {
+	return atomic.LoadUint32(&c.s.conn.initialSendWindow)
+}
+
+func (c *remoteFlowController) incrementInitialWindow(delta int) error {
+	return c.updateWindow(delta, true)
+}
+
+func (c *remoteFlowController) window() int {
+	c.RLock()
+	win := c.win
+	c.RUnlock()
+
+	return win
+}
+
+func (c *remoteFlowController) incrementWindow(delta int) error {
+	return c.updateWindow(delta, false)
+}
+
+func (c *remoteFlowController) updateWindow(delta int, reset bool) error {
+	c.Lock()
+	defer c.Unlock()
+
+	if delta > 0 && maxInitialWindowSize-delta < c.win {
+		if c.s.id == 0 {
+			return ConnError{errors.New("window size overflow"), ErrCodeFlowControl}
+		}
+		return StreamError{errors.New("window size overflow"), ErrCodeFlowControl, c.s.id}
+	}
+
+	if reset {
+		select {
+		case n := <-c.winCh:
+			c.win += n
+		default:
+		}
+	}
+
+	c.win += delta
+
+	if c.win <= 0 {
+		return nil
+	}
+
+	select {
+	case c.winCh <- c.win:
+		c.win = 0
+	default:
+	}
+
 	return nil
 }
+
+func (c *remoteFlowController) windowCh() <-chan int {
+	return c.winCh
+}
+
+func (c *remoteFlowController) cancel() {
+	c.Lock()
+	defer c.Unlock()
+
+	select {
+	case n := <-c.winCh:
+		c.win += n
+	default:
+	}
+}
+
+type flowControlWriter interface {
+	Write(*stream, Frame) error
+	Flush() error
+	Close() error
+}
+
+type streamWriter struct{}
+
+func (w *streamWriter) Write(stream *stream, frame Frame) error {
+	select {
+	case <-stream.conn.closeCh:
+		return ErrClosed
+	case <-stream.closeCh:
+		return errors.New("stream closed")
+	case <-stream.wio:
+		defer func() { stream.wio <- struct{}{} }()
+
+		if frame.Type() == FrameHeaders {
+			headers := frame.(*HeadersFrame)
+			stream.conn.writeQueue.add(&flowControlled{stream, headers, headers.EndStream}, false)
+			select {
+			case err := <-stream.werr:
+				return err
+			case <-stream.conn.closeCh:
+				return ErrClosed
+			case <-stream.closeCh:
+				return errors.New("stream closed x")
+			}
+		}
+
+		data, ok := frame.(*DataFrame)
+		if !ok {
+			return fmt.Errorf("bad flow control frame type %s", frame.Type())
+		}
+		dataLen := data.DataLen
+		padLen := int(data.PadLen)
+		allowed, err := w.allocateBytes(stream, dataLen+padLen)
+		if err != nil {
+			return err
+		}
+		if allowed == dataLen+padLen {
+			stream.conn.writeQueue.add(&flowControlled{stream, data, data.EndStream}, false)
+			select {
+			case err = <-stream.werr:
+				return err
+			case <-stream.conn.closeCh:
+				return ErrClosed
+			case <-stream.closeCh:
+				return errors.New("stream closed x")
+			}
+		}
+
+		cdata := &flowControlled{s: stream}
+		chunk := new(DataFrame)
+
+		*chunk = *data
+
+		var lastFrame bool
+
+	again:
+		chunk.DataLen = dataLen
+		if chunk.DataLen > allowed {
+			chunk.DataLen = allowed
+		}
+		padding := allowed - chunk.DataLen
+		if padding > padLen {
+			padding = padLen
+		}
+
+		dataLen -= chunk.DataLen
+		padLen -= padding
+		lastFrame = dataLen+padLen == 0
+
+		chunk.PadLen = uint8(padding)
+		chunk.EndStream = data.EndStream && lastFrame
+
+		cdata.frameWriterTo = chunk
+		cdata.endStream = chunk.EndStream
+		stream.conn.writeQueue.add(cdata, false)
+		select {
+		case err = <-stream.werr:
+			if lastFrame || err != nil {
+				return err
+			}
+			allowed, err = w.allocateBytes(stream, dataLen+padLen)
+			if err != nil {
+				return err
+			}
+			goto again
+			// case <-stream.conn.closeCh:
+			// 	return ErrClosed
+			// case <-stream.closeCh:
+			// 	return errors.New("stream closed x")
+		}
+	}
+}
+
+type flowControlled struct {
+	s *stream
+	frameWriterTo
+	endStream bool
+}
+
+func (f *flowControlled) writeTo(w *frameWriter) error {
+	err := f.frameWriterTo.writeTo(w)
+	select {
+	case f.s.werr <- err:
+	default:
+	}
+	if f.endStream && err == nil {
+		_, err = f.s.transition(false, f.Type(), true)
+	}
+	return err
+}
+
+func (streamWriter) Flush() error {
+	return nil
+}
+
+func (streamWriter) Close() error {
+	return nil
+}
+
+func (w *streamWriter) allocateBytes(stream *stream, n int) (int, error) {
+	if n <= 0 {
+		return 0, nil
+	}
+
+	c, s := stream.conn.connStream.sendFlow, stream.sendFlow
+
+	s.incrementWindow(0)
+
+	var sw int
+	select {
+	case <-stream.closeCh:
+		return 0, errors.New("stream closed xxx")
+	case <-stream.conn.closeCh:
+		return 0, ErrClosed
+	case sw = <-s.windowCh():
+	}
+
+	c.incrementWindow(0)
+
+	var cw int
+	select {
+	case <-stream.closeCh:
+		c.cancel()
+		return 0, errors.New("stream closed xxx")
+	case <-stream.conn.closeCh:
+		return 0, ErrClosed
+	case cw = <-c.windowCh():
+	}
+
+	if sw < n {
+		n = sw
+	}
+	if cw < n {
+		n = cw
+	}
+
+	if n < sw {
+		s.incrementWindow(sw - n)
+	}
+	if n < cw {
+		c.incrementWindow(cw - n)
+	}
+
+	return n, nil
+}
+
+type flowControlQueue struct {
+}
+
+func (flowControlQueue) Write(*stream, Frame) error {
+	return nil
+}
+
+func (flowControlQueue) Flush() error {
+	return nil
+}
+
+func (flowControlQueue) Close() error {
+	return nil
+}
+
+var _ flowControlWriter = (*streamWriter)(nil)
+var _ flowControlWriter = (*flowControlQueue)(nil)
