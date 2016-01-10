@@ -101,7 +101,9 @@ func (s *stream) compareAndSwapState(from, to StreamState) bool {
 				}
 			case StateOpen:
 				if to == StateHalfClosedLocal {
-					//
+					s.conn.flowControlWriter.Cancel(s)
+					s.sendFlow.cancel()
+					s.sendFlow.incrementWindow(-s.sendFlow.window())
 				}
 			}
 		case StateClosed:
@@ -116,6 +118,16 @@ func (s *stream) compareAndSwapState(from, to StreamState) bool {
 
 			if from != StateClosed {
 				close(s.closeCh)
+
+				s.conn.flowControlWriter.Cancel(s)
+				if s.sendFlow != nil {
+					s.sendFlow.cancel()
+					s.sendFlow.incrementWindow(-s.sendFlow.window())
+				}
+				if s.recvFlow != nil {
+					s.recvFlow.returnBytes(s.recvFlow.consumedBytes())
+				}
+
 				s.conn.removeStream(s)
 			}
 		}
