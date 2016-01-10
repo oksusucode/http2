@@ -105,6 +105,13 @@ func (c *flowController) incrementWindow(delta int) error {
 	return c.windowUpdate()
 }
 
+func (c *flowController) consumedBytes() int {
+	c.Lock()
+	defer c.Unlock()
+
+	return c.processedWin - c.win
+}
+
 func (c *flowController) consumeBytes(n int) error {
 	if n <= 0 {
 		return nil
@@ -322,9 +329,13 @@ type flowControlWriter interface {
 	Write(*stream, Frame) error
 	Flush() error
 	Close() error
+	Cancel(*stream) error
 }
 
-type streamWriter struct{}
+type streamWriter struct {
+	// pending,
+	// written int64
+}
 
 func (w *streamWriter) Write(stream *stream, frame Frame) error {
 	select {
@@ -441,6 +452,14 @@ func (streamWriter) Close() error {
 	return nil
 }
 
+func (w *streamWriter) Cancel(stream *stream) error {
+	select {
+	case stream.werr <- errors.New("stream canceled"):
+	default:
+	}
+	return nil
+}
+
 func (w *streamWriter) allocateBytes(stream *stream, n int) (int, error) {
 	if n <= 0 {
 		return 0, nil
@@ -500,6 +519,10 @@ func (flowControlQueue) Flush() error {
 }
 
 func (flowControlQueue) Close() error {
+	return nil
+}
+
+func (flowControlQueue) Cancel(*stream) error {
 	return nil
 }
 
