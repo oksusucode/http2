@@ -237,7 +237,6 @@ func (c *Conn) setInitialSendWindow(n uint32) error {
 		if stream.writable() {
 			if err := stream.sendFlow.incrementInitialWindow(delta); err != nil {
 				if stream.id == 0 {
-					c.streamL.RUnlock()
 					return err
 				}
 				se := err.(StreamError)
