@@ -423,7 +423,14 @@ func (c *Conn) writeLoop() {
 			flush := !c.writeQueue.set()
 
 			if frame == nil {
-				if err = c.buf.Flush(); err != nil {
+				err = c.buf.Flush()
+				if flush {
+					if c.goingAway() && c.NumActiveStreams() == 0 {
+						c.close()
+						return
+					}
+				}
+				if err != nil {
 					c.handleErr(err)
 				}
 				continue
