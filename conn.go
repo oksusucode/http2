@@ -257,7 +257,7 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 		if stream == nil {
 			return
 		}
-		if _, err = stream.transition(false, FrameRSTStream, false); err != nil {
+		if _, err = stream.transition(false, FrameRSTStream, false); err == nil {
 			c.writeQueue.add(frame, true)
 		}
 	case FrameSettings:
