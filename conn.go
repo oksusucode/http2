@@ -97,10 +97,6 @@ func NewConnSize(rwc io.ReadWriteCloser, server bool, readBufSize, writeBufSize 
 	return conn
 }
 
-type idCh struct {
-	i, o chan uint32
-}
-
 func (c *Conn) NumActiveStreams() uint32 {
 	return atomic.LoadUint32(&c.numStreams) + atomic.LoadUint32(&c.remote.numStreams)
 }
@@ -219,6 +215,9 @@ func (s *connState) validStreamID(streamID uint32) bool {
 }
 
 func (c *Conn) WriteFrame(frame Frame) (err error) {
+	if c.Closed() {
+		return ErrClosed
+	}
 	if frame == nil {
 		return errors.New("frame must be not nil")
 	}
@@ -348,9 +347,6 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 			break
 		}
 		if stream := c.stream(frame.streamID()); stream != nil {
-			// if _, err = stream.transition(false, FrameWindowUpdate, false); err == nil {
-			// 	err = stream.recvFlow.incrementWindow(int(frame.(*WindowUpdateFrame).WindowSizeIncrement))
-			// }
 			err = stream.recvFlow.incrementWindow(int(frame.(*WindowUpdateFrame).WindowSizeIncrement))
 		}
 	default:
@@ -365,35 +361,55 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 }
 
 func (c *Conn) Flush() error {
-	return c.flowControlWriter.Flush()
+	err := c.flowControlWriter.Flush()
+	c.writeQueue.add(nil, false)
+	return err
 }
 
 func (c *Conn) Closed() bool {
 	return atomic.LoadInt32(&c.closed) == 1
 }
 
+var defaultCloseTimeout = 3 * time.Second
+
 func (c *Conn) Close() error {
+	return c.CloseTimeout(defaultCloseTimeout)
+}
+
+func (c *Conn) CloseTimeout(timeout time.Duration) error {
 	if atomic.CompareAndSwapInt32(&c.closing, 0, 1) {
+		// A server that is attempting to gracefully shut down a
+		// connection SHOULD send an initial GOAWAY frame with the last stream
+		// identifier set to 2^31-1 and a NO_ERROR code.  This signals to the
+		// client that a shutdown is imminent and that initiating further
+		// requests is prohibited.  After allowing time for any in-flight stream
+		// creation (at least one round-trip time), the server can send another
+		// GOAWAY frame with an updated last stream identifier.  This ensures
+		// that a connection can be cleanly shut down without losing requests.
+		// if c.server && !c.goingAway() {
+		// 	c.WriteFrame(&GoAwayFrame{LastStreamID: maxConcurrentStreams, ErrCode: ErrCodeNo})
+		// }
+
+		// Endpoints SHOULD send a GOAWAY frame when ending a connection,
+		// providing that circumstances permit it.
 		c.WriteFrame(&GoAwayFrame{LastStreamID: c.remote.lastStreamID, ErrCode: ErrCodeNo})
 		c.Flush()
 
 		select {
 		case <-c.closeCh:
 			return nil
-		case <-time.After(3 * time.Second):
+		case <-time.After(timeout):
 			return c.close()
 		}
 	}
-
 	<-c.closeCh
-	return nil
+	return ErrClosed
 }
 
 func (c *Conn) close() error {
 	if !atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
 		return ErrClosed
 	}
-
 	if c.NumActiveStreams() > 0 {
 		var streams []*stream
 
@@ -466,7 +482,6 @@ func (c *Conn) writeLoop() {
 					v.Settings = nil
 				}
 			}
-
 			err = c.frameWriter.WriteFrame(frame)
 			if flush {
 				if err == nil {
@@ -723,9 +738,6 @@ again:
 			break
 		}
 		if stream := c.stream(v.StreamID); stream != nil {
-			// if _, err = stream.transition(true, FrameWindowUpdate, false); err == nil {
-			// 	err = stream.sendFlow.incrementWindow(int(v.WindowSizeIncrement))
-			// }
 			err = stream.sendFlow.incrementWindow(int(v.WindowSizeIncrement))
 		}
 	}
