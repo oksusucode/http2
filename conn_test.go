@@ -14,6 +14,10 @@ func BenchmarkConnReadWriteC1_1K(b *testing.B) {
 	benchmark(b, 1, 1024)
 }
 
+func BenchmarkConnReadWriteC8_1K(b *testing.B) {
+	benchmark(b, 8, 1024)
+}
+
 func BenchmarkConnReadWriteC64_1K(b *testing.B) {
 	benchmark(b, 64, 1024)
 }
@@ -82,9 +86,9 @@ func (c *conn) serve() {
 		if err != nil {
 			return
 		}
-		switch frame.Type() {
-		case FrameData:
-			v := frame.(*DataFrame)
+		var endStream bool
+		switch v := frame.(type) {
+		case *DataFrame:
 			c.rb.Reset()
 			var n int64
 			n, err = c.rb.ReadFrom(v.Data)
@@ -93,9 +97,12 @@ func (c *conn) serve() {
 			if err != nil {
 				return
 			}
-			if c.server && v.EndStream {
-				go c.writeBytes(v.StreamID, int(c.pending[v.StreamID]))
-			}
+			endStream = v.EndStream
+		case *HeadersFrame:
+			endStream = v.EndStream
+		}
+		if endStream && c.server {
+			go c.writeBytes(frame.streamID(), int(c.pending[frame.streamID()]))
 		}
 	}
 }
