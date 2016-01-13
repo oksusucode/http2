@@ -130,11 +130,11 @@ func pipe(tcp bool) (server *Conn, client *Conn) {
 			}
 			lis.SetDeadline(time.Now().Add(300 * time.Millisecond))
 			go func() {
-				s, err := lis.Accept()
+				s, err := lis.AcceptTCP()
 				if err != nil {
 					panic(err)
 				}
-				s.(*net.TCPConn).SetNoDelay(true)
+				s.SetNoDelay(true)
 				server = NewConn(s, true)
 				lis.Close()
 				close(done)
