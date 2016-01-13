@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,7 +44,8 @@ type Conn struct {
 	*connState
 	remote *connState
 
-	idCh chan uint32
+	idCh    chan struct{}
+	idState int32
 }
 
 const defaultBufSize = 4096
@@ -88,9 +90,8 @@ func NewConnSize(rwc io.ReadWriteCloser, server bool, readBufSize, writeBufSize 
 		conn.remote.nextStreamID = 2
 		conn.pushEnabled = defaultEnablePush
 	}
-	//
-	conn.idCh = make(chan uint32, 1)
-	conn.idCh <- conn.nextStreamID
+	conn.idCh = make(chan struct{}, 1)
+	conn.idCh <- struct{}{}
 
 	go conn.writeLoop()
 
@@ -101,17 +102,18 @@ func (c *Conn) NumActiveStreams() uint32 {
 	return atomic.LoadUint32(&c.numStreams) + atomic.LoadUint32(&c.remote.numStreams)
 }
 
-func (c *Conn) NextStreamID() uint32 {
+func (c *Conn) NextStreamID() (uint32, error) {
 	select {
+	case <-c.idCh:
+		atomic.StoreInt32(&c.idState, 1)
+		return c.nextStreamID, nil
 	case <-c.closeCh:
-		return 0
-	case n := <-c.idCh:
-		return n
+		return 0, ErrClosed
 	}
 }
 
 func (c *Conn) LastStreamID() uint32 {
-	return c.remote.lastStreamID
+	return atomic.LoadUint32(&c.remote.lastStreamID)
 }
 
 func (c *Conn) GoAwaySent() (bool, *GoAwayFrame) {
@@ -147,8 +149,8 @@ func (c *Conn) removeStream(stream *stream) {
 	delete(c.streams, stream.id)
 	c.streamL.Unlock()
 
-	if c.goAwaySent.Load() != nil && c.NumActiveStreams() == 0 {
-		c.close()
+	if c.goingAway() && c.NumActiveStreams() == 0 {
+		c.Flush()
 	}
 }
 
@@ -164,7 +166,7 @@ type connState struct {
 
 var errClosedStream = ConnError{errors.New("closed stream"), ErrCodeProtocol}
 
-func (s *connState) newStream(streamID uint32, reserve bool) (*stream, error) {
+func (s *connState) idleStream(streamID uint32) (*stream, error) {
 	// Receivers of a GOAWAY frame MUST NOT open
 	// additional streams on the connection, although a new connection can
 	// be established for new streams.
@@ -196,16 +198,9 @@ func (s *connState) newStream(streamID uint32, reserve bool) (*stream, error) {
 		werr:    make(chan error),
 		closeCh: make(chan struct{}),
 	}
-	if reserve {
-		if stream.local() {
-			stream.state = StateReservedLocal
-		} else {
-			stream.state = StateReservedRemote
-		}
-	}
 	stream.wio <- struct{}{}
 	s.nextStreamID = streamID + 2
-	s.lastStreamID = streamID
+	atomic.StoreUint32(&s.lastStreamID, streamID)
 
 	return stream, nil
 }
@@ -235,12 +230,12 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 		stream := c.stream(frame.streamID())
 		if stream == nil {
 			defer func() {
-				select {
-				case c.idCh <- c.nextStreamID:
-				default:
+				if atomic.CompareAndSwapInt32(&c.idState, 1, 0) {
+					c.idCh <- struct{}{}
 				}
 			}()
-			if stream, err = c.newStream(frame.streamID(), false); err != nil {
+
+			if stream, err = c.idleStream(frame.streamID()); err != nil {
 				break
 			}
 		}
@@ -248,8 +243,6 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 			return c.flowControlWriter.Write(stream, frame)
 		}
 	case FramePriority:
-		//
-		// An endpoint MUST NOT send frames other than PRIORITY on a closed stream.
 		//
 	case FrameRSTStream:
 		stream := c.stream(frame.streamID())
@@ -280,33 +273,27 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 			err = ConnError{fmt.Errorf("stream %d does not exist", frame.streamID()), ErrCodeProtocol}
 			break
 		}
-		// if !stream.active() {
-		// 	err = ConnError{fmt.Errorf("stream %d is not active", frame.streamID()), ErrCodeProtocol}
-		// 	break
-		// }
-		// var cs *connState
-		// if stream.local() {
-		// 	cs = c.remote
-		// } else {
-		// 	cs = c.connState
-		// }
-		// if !cs.pushEnabled {
-		// 	err = ConnError{errors.New("server push not allowed"), ErrCodeProtocol}
-		// 	break
-		// }
-		// promisedID := frame.(*PushPromiseFrame).PromisedStreamID
-		// if err = cs.newStream(promisedID, true); err != nil {
-		// 	//
-		// 	defer func() {
-		// 		select {
-		// 		case c.nextIDCh <- c.nextStreamID:
-		// 		default:
-		// 		}
-		// 	}()
-		// 	break
-		// }
-		// c.writeQueue.add(frame, true)
-		// c.writeQueue.flush(true)
+		if !stream.writable() {
+			err = ConnError{fmt.Errorf("stream %d is not active", frame.streamID()), ErrCodeProtocol}
+			break
+		}
+		if !c.remote.pushEnabled {
+			err = ConnError{errors.New("server push not allowed"), ErrCodeProtocol}
+			break
+		}
+
+		defer func() {
+			if atomic.CompareAndSwapInt32(&c.idState, 1, 0) {
+				c.idCh <- struct{}{}
+			}
+		}()
+
+		if stream, err = c.idleStream(frame.(*PushPromiseFrame).PromisedStreamID); err == nil {
+			_, err = stream.transition(false, FramePushPromise, false)
+		}
+		if err == nil {
+			c.writeQueue.add(frame, false)
+		}
 	case FramePing:
 		c.writeQueue.add(frame, true)
 	case FrameGoAway:
@@ -344,9 +331,7 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 	case FrameWindowUpdate:
 		if frame.streamID() == 0 {
 			err = c.connStream.recvFlow.incrementWindow(int(frame.(*WindowUpdateFrame).WindowSizeIncrement))
-			break
-		}
-		if stream := c.stream(frame.streamID()); stream != nil {
+		} else if stream := c.stream(frame.streamID()); stream != nil {
 			err = stream.recvFlow.incrementWindow(int(frame.(*WindowUpdateFrame).WindowSizeIncrement))
 		}
 	default:
@@ -378,28 +363,17 @@ func (c *Conn) Close() error {
 
 func (c *Conn) CloseTimeout(timeout time.Duration) error {
 	if atomic.CompareAndSwapInt32(&c.closing, 0, 1) {
-		// A server that is attempting to gracefully shut down a
-		// connection SHOULD send an initial GOAWAY frame with the last stream
-		// identifier set to 2^31-1 and a NO_ERROR code.  This signals to the
-		// client that a shutdown is imminent and that initiating further
-		// requests is prohibited.  After allowing time for any in-flight stream
-		// creation (at least one round-trip time), the server can send another
-		// GOAWAY frame with an updated last stream identifier.  This ensures
-		// that a connection can be cleanly shut down without losing requests.
-		// if c.server && !c.goingAway() {
-		// 	c.WriteFrame(&GoAwayFrame{LastStreamID: maxConcurrentStreams, ErrCode: ErrCodeNo})
-		// }
-
 		// Endpoints SHOULD send a GOAWAY frame when ending a connection,
 		// providing that circumstances permit it.
-		c.WriteFrame(&GoAwayFrame{LastStreamID: c.remote.lastStreamID, ErrCode: ErrCodeNo})
-		c.Flush()
+		c.WriteFrame(&GoAwayFrame{LastStreamID: c.LastStreamID(), ErrCode: ErrCodeNo})
+
+		c.flowControlWriter.Flush()
 
 		select {
 		case <-c.closeCh:
 			return nil
 		case <-time.After(timeout):
-			return c.close()
+			return fmt.Errorf("http2: close timeout; %v", c.close())
 		}
 	}
 	<-c.closeCh
@@ -427,6 +401,20 @@ func (c *Conn) close() error {
 	return c.rwc.Close()
 }
 
+func (c *Conn) LocalAddr() net.Addr {
+	if nc, ok := c.rwc.(net.Conn); ok {
+		return nc.LocalAddr()
+	}
+	return nil
+}
+
+func (c *Conn) RemoteAddr() net.Addr {
+	if nc, ok := c.rwc.(net.Conn); ok {
+		return nc.RemoteAddr()
+	}
+	return nil
+}
+
 func (c *Conn) writeLoop() {
 	var (
 		frame Frame
@@ -440,11 +428,9 @@ func (c *Conn) writeLoop() {
 
 			if frame == nil {
 				err = c.buf.Flush()
-				if flush {
-					if c.goingAway() && c.NumActiveStreams() == 0 {
-						c.close()
-						return
-					}
+				if flush && c.goingAway() && c.NumActiveStreams() == 0 && !c.writeQueue.set() {
+					c.close()
+					return
 				}
 				if err != nil {
 					c.handleErr(err)
@@ -482,16 +468,19 @@ func (c *Conn) writeLoop() {
 					v.Settings = nil
 				}
 			}
+
 			err = c.frameWriter.WriteFrame(frame)
+
 			if flush {
 				if err == nil {
 					err = c.buf.Flush()
 				}
-				if c.goingAway() && c.NumActiveStreams() == 0 {
+				if c.goingAway() && c.NumActiveStreams() == 0 && !c.writeQueue.set() {
 					c.close()
 					return
 				}
 			}
+
 			if err != nil {
 				c.handleErr(err)
 			}
@@ -612,12 +601,13 @@ again:
 			switch err.(type) {
 			case ConnError:
 			default:
-				err1 := stream.recvFlow.consumeBytes(dataLen)
-				if _, ok := err1.(ConnError); !ok {
-					err1 = stream.recvFlow.returnBytes(dataLen)
-					if _, ok := err1.(ConnError); ok {
-						err = err1
-					}
+				if ce, ok := stream.recvFlow.consumeBytes(dataLen).(ConnError); ok {
+					err = ce
+					break
+				}
+				if ce, ok := stream.recvFlow.returnBytes(dataLen).(ConnError); ok {
+					err = ce
+					break
 				}
 			}
 			break
@@ -627,9 +617,8 @@ again:
 			switch err.(type) {
 			case ConnError:
 			default:
-				err1 := stream.recvFlow.returnBytes(dataLen)
-				if _, ok := err1.(ConnError); ok {
-					err = err1
+				if ce, ok := stream.recvFlow.returnBytes(dataLen).(ConnError); ok {
+					err = ce
 				}
 			}
 			break
@@ -639,7 +628,7 @@ again:
 	case *HeadersFrame:
 		stream := c.stream(v.StreamID)
 		if stream == nil {
-			if stream, err = c.remote.newStream(v.StreamID, false); err != nil {
+			if stream, err = c.remote.idleStream(v.StreamID); err != nil {
 				break
 			}
 		}
@@ -710,7 +699,22 @@ again:
 		}
 		c.writeQueue.add(&SettingsFrame{true, v.Settings}, true)
 	case *PushPromiseFrame:
-		//
+		stream := c.stream(frame.streamID())
+		if stream == nil {
+			err = ConnError{fmt.Errorf("stream %d does not exist", v.StreamID), ErrCodeProtocol}
+			break
+		}
+		if !stream.readable() {
+			err = ConnError{fmt.Errorf("stream %d is not active", v.StreamID), ErrCodeProtocol}
+			break
+		}
+		if !c.pushEnabled {
+			err = ConnError{errors.New("server push not allowed"), ErrCodeProtocol}
+			break
+		}
+		if stream, err = c.idleStream(v.PromisedStreamID); err == nil {
+			_, err = stream.transition(true, FramePushPromise, false)
+		}
 	case *PingFrame:
 		if !v.Ack {
 			c.writeQueue.add(&PingFrame{true, v.Data}, true)
@@ -735,9 +739,7 @@ again:
 	case *WindowUpdateFrame:
 		if v.StreamID == 0 {
 			err = c.connStream.sendFlow.incrementWindow(int(v.WindowSizeIncrement))
-			break
-		}
-		if stream := c.stream(v.StreamID); stream != nil {
+		} else if stream := c.stream(v.StreamID); stream != nil {
 			err = stream.sendFlow.incrementWindow(int(v.WindowSizeIncrement))
 		}
 	}
@@ -750,6 +752,13 @@ exit:
 		err = io.ErrUnexpectedEOF
 	}
 	if err != nil {
+		if ne, ok := err.(net.Error); ok {
+			if ne.Temporary() {
+				goto again
+			}
+			return nil, c.close()
+		}
+
 		c.handleErr(err)
 	}
 	return
@@ -807,9 +816,9 @@ func (c *Conn) handleErr(err error) {
 			c.WriteFrame(&RSTStreamFrame{se.StreamID, se.ErrCode})
 		}
 	case ConnError:
-		c.WriteFrame(&GoAwayFrame{c.remote.lastStreamID, e.ErrCode, []byte(e.Error())})
+		c.WriteFrame(&GoAwayFrame{c.LastStreamID(), e.ErrCode, []byte(e.Error())})
 	default:
-		c.WriteFrame(&GoAwayFrame{c.remote.lastStreamID, ErrCodeInternal, []byte(e.Error())})
+		c.WriteFrame(&GoAwayFrame{c.LastStreamID(), ErrCodeInternal, []byte(e.Error())})
 	}
 }
 
