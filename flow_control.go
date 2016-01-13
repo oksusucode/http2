@@ -46,7 +46,7 @@ func (c *Conn) setInitialRecvWindow(n uint32) error {
 	defer c.streamL.RUnlock()
 
 	for _, stream := range c.streams {
-		if stream.active() {
+		if stream.readable() {
 			if err := stream.recvFlow.incrementInitialWindow(delta); err != nil {
 				errors.add(stream.id, ErrCodeFlowControl, err)
 			}
@@ -106,8 +106,8 @@ func (c *flowController) incrementWindow(delta int) error {
 }
 
 func (c *flowController) consumedBytes() int {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 
 	return c.processedWin - c.win
 }
@@ -351,10 +351,10 @@ func (w *streamWriter) Write(stream *stream, frame Frame) error {
 			select {
 			case err := <-stream.werr:
 				return err
-			case <-stream.conn.closeCh:
-				return ErrClosed
-			case <-stream.closeCh:
-				return errors.New("stream closed x")
+				// case <-stream.conn.closeCh:
+				// 	return ErrClosed
+				// case <-stream.closeCh:
+				// 	return errors.New("stream closed x")
 			}
 		}
 
@@ -373,10 +373,10 @@ func (w *streamWriter) Write(stream *stream, frame Frame) error {
 			select {
 			case err = <-stream.werr:
 				return err
-			case <-stream.conn.closeCh:
-				return ErrClosed
-			case <-stream.closeCh:
-				return errors.New("stream closed x")
+				// case <-stream.conn.closeCh:
+				// 	return ErrClosed
+				// case <-stream.closeCh:
+				// 	return errors.New("stream closed x")
 			}
 		}
 
@@ -433,10 +433,7 @@ type flowControlled struct {
 
 func (f *flowControlled) writeTo(w *frameWriter) error {
 	err := f.frameWriterTo.writeTo(w)
-	select {
-	case f.s.werr <- err:
-	default:
-	}
+	f.s.werr <- err
 	if f.endStream && err == nil {
 		_, err = f.s.transition(false, f.Type(), true)
 	}
