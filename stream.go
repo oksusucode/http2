@@ -49,6 +49,15 @@ func (s *stream) active() bool {
 	}
 }
 
+func (s *stream) readable() bool {
+	switch StreamState(atomic.LoadInt32((*int32)(&s.state))) {
+	case StateOpen, StateHalfClosedLocal:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *stream) writable() bool {
 	switch StreamState(atomic.LoadInt32((*int32)(&s.state))) {
 	case StateOpen, StateHalfClosedRemote:
@@ -56,10 +65,6 @@ func (s *stream) writable() bool {
 	default:
 		return false
 	}
-}
-
-func (s *stream) setPriority(priority Priority) error {
-	return nil
 }
 
 func (s *stream) close() {
@@ -75,9 +80,17 @@ func (s *stream) local() bool {
 	return s.conn.server == ((s.id & 1) == 0)
 }
 
+func (s *stream) setPriority(priority Priority) error {
+	return nil
+}
+
 func (s *stream) compareAndSwapState(from, to StreamState) bool {
 	if atomic.CompareAndSwapInt32((*int32)(&s.state), int32(from), int32(to)) {
 		switch to {
+		case StateReservedLocal, StateReservedRemote:
+			if from == StateIdle {
+				s.conn.addStream(s)
+			}
 		case StateOpen, StateHalfClosedLocal, StateHalfClosedRemote:
 			switch from {
 			case StateIdle, StateReservedLocal, StateReservedRemote:
