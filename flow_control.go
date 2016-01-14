@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 )
 
 func (c *Conn) InitialRecvWindow(streamID uint32) uint32 {
@@ -32,13 +31,10 @@ func (c *Conn) RecvWindow(streamID uint32) uint32 {
 	return 0
 }
 
-func (c *Conn) setInitialRecvWindow(n uint32) error {
-	o := atomic.LoadUint32(&c.initialRecvWindow)
-	delta := int(n) - int(o)
+func (c *Conn) setInitialRecvWindow(delta int) error {
 	if delta == 0 {
 		return nil
 	}
-	atomic.StoreUint32(&c.initialRecvWindow, n)
 
 	var errors StreamErrorList
 
@@ -202,7 +198,8 @@ func (c *flowController) windowUpdate() error {
 }
 
 func (c *Conn) InitialSendWindow(uint32) uint32 {
-	return atomic.LoadUint32(&c.initialSendWindow)
+	remote := c.remote.settings.Load().(Settings)
+	return remote.InitialWindowSize()
 }
 
 func (c *Conn) SendWindow(streamID uint32) uint32 {
@@ -220,13 +217,10 @@ func (c *Conn) SendWindow(streamID uint32) uint32 {
 	return 0
 }
 
-func (c *Conn) setInitialSendWindow(n uint32) error {
-	o := atomic.LoadUint32(&c.initialSendWindow)
-	delta := int(n) - int(o)
+func (c *Conn) setInitialSendWindow(delta int) error {
 	if delta == 0 {
 		return nil
 	}
-	atomic.StoreUint32(&c.initialSendWindow, n)
 
 	var errors StreamErrorList
 
@@ -253,10 +247,6 @@ type remoteFlowController struct {
 	s     *stream
 	win   int
 	winCh chan int
-}
-
-func (c *remoteFlowController) initialWindow() uint32 {
-	return atomic.LoadUint32(&c.s.conn.initialSendWindow)
 }
 
 func (c *remoteFlowController) incrementInitialWindow(delta int) error {

@@ -90,7 +90,7 @@ func (id SettingID) String() string {
 	}
 }
 
-func (s *Settings) HeaderTableSize() (uint32, bool) {
+func (s Settings) HeaderTableSize() uint32 {
 	return s.Value(SettingHeaderTableSize)
 }
 
@@ -98,9 +98,8 @@ func (s *Settings) SetHeaderTableSize(value uint32) error {
 	return s.SetValue(SettingHeaderTableSize, value)
 }
 
-func (s *Settings) PushEnabled() (bool, bool) {
-	v, ok := s.Value(SettingEnablePush)
-	return v != 0, ok
+func (s Settings) PushEnabled() bool {
+	return s.Value(SettingEnablePush) != 0
 }
 
 func (s *Settings) SetPushEnabled(enabled bool) error {
@@ -111,7 +110,7 @@ func (s *Settings) SetPushEnabled(enabled bool) error {
 	return s.SetValue(SettingEnablePush, value)
 }
 
-func (s *Settings) MaxConcurrentStreams() (uint32, bool) {
+func (s Settings) MaxConcurrentStreams() uint32 {
 	return s.Value(SettingMaxConcurrentStreams)
 }
 
@@ -119,7 +118,7 @@ func (s *Settings) SetMaxConcurrentStreams(value uint32) error {
 	return s.SetValue(SettingMaxConcurrentStreams, value)
 }
 
-func (s *Settings) InitialWindowSize() (uint32, bool) {
+func (s Settings) InitialWindowSize() uint32 {
 	return s.Value(SettingInitialWindowSize)
 }
 
@@ -127,7 +126,7 @@ func (s *Settings) SetInitialWindowSize(value uint32) error {
 	return s.SetValue(SettingInitialWindowSize, value)
 }
 
-func (s *Settings) MaxFrameSize() (uint32, bool) {
+func (s Settings) MaxFrameSize() uint32 {
 	return s.Value(SettingMaxFrameSize)
 }
 
@@ -135,7 +134,7 @@ func (s *Settings) SetMaxFrameSize(value uint32) error {
 	return s.SetValue(SettingMaxFrameSize, value)
 }
 
-func (s *Settings) MaxHeaderListSize() (uint32, bool) {
+func (s Settings) MaxHeaderListSize() uint32 {
 	return s.Value(SettingMaxHeaderListSize)
 }
 
@@ -143,16 +142,28 @@ func (s *Settings) SetMaxHeaderListSize(value uint32) error {
 	return s.SetValue(SettingMaxHeaderListSize, value)
 }
 
-func (s Settings) Value(id SettingID) (uint32, bool) {
-	if len(s) == 0 {
-		return 0, false
-	}
+func (s Settings) Value(id SettingID) uint32 {
 	for _, x := range s {
 		if x.ID == id {
-			return x.Value, true
+			return x.Value
 		}
 	}
-	return 0, false
+	switch id {
+	case SettingHeaderTableSize:
+		return defaultHeaderTableSize
+	case SettingEnablePush:
+		return defaultEnablePush
+	case SettingMaxConcurrentStreams:
+		return defaultMaxConcurrentStreams
+	case SettingInitialWindowSize:
+		return defaultInitialWindowSize
+	case SettingMaxFrameSize:
+		return defaultMaxFrameSize
+	case SettingMaxHeaderListSize:
+		return 0
+	default:
+		return 0
+	}
 }
 
 func (s *Settings) SetValue(id SettingID, value uint32) error {

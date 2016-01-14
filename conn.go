@@ -22,12 +22,7 @@ type Conn struct {
 	frameWriter *frameWriter
 	writeQueue  *writeQueue
 
-	initialRecvWindow,
-	initialSendWindow uint32
-
 	flowControlWriter flowControlWriter
-
-	settingsCh chan Settings
 
 	connStream *stream
 
@@ -38,9 +33,7 @@ type Conn struct {
 	closed  int32
 	closeCh chan struct{}
 
-	goAwaySent,
-	goAwayReceived atomic.Value
-
+	settingsCh chan Settings
 	*connState
 	remote *connState
 
@@ -68,10 +61,7 @@ func NewConnSize(rwc io.ReadWriteCloser, server bool, readBufSize, writeBufSize 
 	conn.frameReader = newFrameReader(conn.buf.Reader, readBufSize)
 	conn.frameWriter = newFrameWriter(conn.buf.Writer)
 	conn.writeQueue = &writeQueue{ch: make(chan Frame, 1)}
-	conn.initialRecvWindow = defaultInitialWindowSize
-	conn.initialSendWindow = defaultInitialWindowSize
 	conn.flowControlWriter = &streamWriter{}
-	conn.settingsCh = make(chan Settings, 4)
 	conn.connStream = &stream{conn: conn, id: 0, weight: defaultWeight}
 	w := int(defaultInitialWindowSize)
 	conn.connStream.recvFlow = &flowController{s: conn.connStream, win: w, winUpperBound: w, processedWin: w}
@@ -79,16 +69,19 @@ func NewConnSize(rwc io.ReadWriteCloser, server bool, readBufSize, writeBufSize 
 	conn.connStream.sendFlow.incrementInitialWindow(w)
 	conn.streams = make(map[uint32]*stream)
 	conn.closeCh = make(chan struct{})
-	conn.connState = &connState{conn: conn, server: server, maxStreams: defaultMaxConcurrentStreams}
-	conn.remote = &connState{conn: conn, server: !server, maxStreams: defaultMaxConcurrentStreams}
+	conn.settingsCh = make(chan Settings, 4)
+	conn.connState = &connState{conn: conn, server: server}
+	conn.remote = &connState{conn: conn, server: !server}
 	if server {
 		conn.nextStreamID = 2
+		conn.settings.Store(Settings{setting{SettingEnablePush, 0}})
 		conn.remote.nextStreamID = 1
-		conn.remote.pushEnabled = defaultEnablePush
+		conn.remote.settings.Store(Settings{})
 	} else {
 		conn.nextStreamID = 1
+		conn.settings.Store(Settings{})
 		conn.remote.nextStreamID = 2
-		conn.pushEnabled = defaultEnablePush
+		conn.remote.settings.Store(Settings{setting{SettingEnablePush, 0}})
 	}
 	conn.idCh = make(chan struct{}, 1)
 	conn.idCh <- struct{}{}
@@ -96,6 +89,10 @@ func NewConnSize(rwc io.ReadWriteCloser, server bool, readBufSize, writeBufSize 
 	go conn.writeLoop()
 
 	return conn
+}
+
+func (c *Conn) ServerConn() bool {
+	return c.server
 }
 
 func (c *Conn) NumActiveStreams() uint32 {
@@ -116,18 +113,26 @@ func (c *Conn) LastStreamID() uint32 {
 	return atomic.LoadUint32(&c.remote.lastStreamID)
 }
 
-func (c *Conn) GoAwaySent() (bool, *GoAwayFrame) {
-	goAway, sent := c.goAwaySent.Load().(*GoAwayFrame)
-	return sent, goAway
+func (c *Conn) Settings() Settings {
+	return c.settings.Load().(Settings)
+}
+
+func (c *Conn) RemoteSettings() Settings {
+	return c.remote.settings.Load().(Settings)
 }
 
 func (c *Conn) GoAwayReceived() (bool, *GoAwayFrame) {
-	goAway, received := c.goAwayReceived.Load().(*GoAwayFrame)
+	goAway, received := c.goAway.Load().(*GoAwayFrame)
 	return received, goAway
 }
 
+func (c *Conn) GoAwaySent() (bool, *GoAwayFrame) {
+	goAway, sent := c.remote.goAway.Load().(*GoAwayFrame)
+	return sent, goAway
+}
+
 func (c *Conn) goingAway() bool {
-	return c.goAwaySent.Load() != nil || c.goAwayReceived.Load() != nil
+	return c.remote.goAway.Load() != nil || c.goAway.Load() != nil
 }
 
 func (c *Conn) stream(streamID uint32) *stream {
@@ -155,13 +160,13 @@ func (c *Conn) removeStream(stream *stream) {
 }
 
 type connState struct {
-	conn *Conn
-	server,
-	pushEnabled bool
-	maxStreams,
-	numStreams uint32
+	conn   *Conn
+	server bool
+	numStreams,
 	nextStreamID,
 	lastStreamID uint32
+	settings,
+	goAway atomic.Value
 }
 
 var errClosedStream = ConnError{errors.New("closed stream"), ErrCodeProtocol}
@@ -170,7 +175,7 @@ func (s *connState) idleStream(streamID uint32) (*stream, error) {
 	// Receivers of a GOAWAY frame MUST NOT open
 	// additional streams on the connection, although a new connection can
 	// be established for new streams.
-	if goAway, ok := s.conn.goAwayReceived.Load().(*GoAwayFrame); ok {
+	if goAway, ok := s.conn.goAway.Load().(*GoAwayFrame); ok {
 		return nil, ConnError{
 			fmt.Errorf("received a GOAWAY frame with last stream id %d", goAway.LastStreamID),
 			ErrCodeProtocol,
@@ -185,7 +190,7 @@ func (s *connState) idleStream(streamID uint32) (*stream, error) {
 		return nil, errClosedStream
 	}
 
-	if atomic.LoadUint32(&s.numStreams)+1 > atomic.LoadUint32(&s.maxStreams) {
+	if atomic.LoadUint32(&s.numStreams)+1 > s.settings.Load().(Settings).MaxConcurrentStreams() {
 		return nil, ConnError{errors.New("maximum streams exceeded"), ErrCodeRefusedStream}
 	}
 
@@ -264,7 +269,7 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 			return errors.New("settings pool overflow")
 		}
 	case FramePushPromise:
-		if c.goAwayReceived.Load() != nil {
+		if c.goAway.Load() != nil {
 			err = ConnError{errors.New("sending PUSH_PROMISE after GO_AWAY received"), ErrCodeProtocol}
 			break
 		}
@@ -277,7 +282,7 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 			err = ConnError{fmt.Errorf("stream %d is not active", frame.streamID()), ErrCodeProtocol}
 			break
 		}
-		if !c.remote.pushEnabled {
+		if !c.RemoteSettings().PushEnabled() {
 			err = ConnError{errors.New("server push not allowed"), ErrCodeProtocol}
 			break
 		}
@@ -305,13 +310,13 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 		// streams could have been acted upon.  Endpoints MUST NOT increase the
 		// value they send in the last stream identifier, since the peers might
 		// already have retried unprocessed requests on another connection.
-		if goAwaySent, ok := c.goAwaySent.Load().(*GoAwayFrame); ok {
+		if goAwaySent, ok := c.remote.goAway.Load().(*GoAwayFrame); ok {
 			if frame.(*GoAwayFrame).LastStreamID > goAwaySent.LastStreamID {
 				return fmt.Errorf("last stream ID must be <= %d", goAwaySent.LastStreamID)
 			}
 		}
 
-		c.goAwaySent.Store(frame)
+		c.remote.goAway.Store(frame)
 
 		var streams []*stream
 
@@ -421,6 +426,7 @@ func (c *Conn) writeLoop() {
 		err   error
 	)
 
+loop:
 	for {
 		select {
 		case frame = <-c.writeQueue.get():
@@ -435,27 +441,27 @@ func (c *Conn) writeLoop() {
 				if err != nil {
 					c.handleErr(err)
 				}
-				continue
+				continue loop
 			}
+
+			var settingsSyn bool
 
 			switch frame.Type() {
 			case FrameSettings:
 				v := frame.(*SettingsFrame)
+				settingsSyn = !v.Ack
 				if v.Ack {
+					remote := c.remote.settings.Load().(Settings)
+				set:
 					for _, setting := range v.Settings {
 						switch setting.ID {
 						case SettingEnablePush:
-							if setting.Value == 1 {
-								c.remote.pushEnabled = true
-							} else {
-								c.remote.pushEnabled = false
-							}
 						case SettingMaxConcurrentStreams:
-							atomic.StoreUint32(&c.maxStreams, setting.Value)
 						case SettingInitialWindowSize:
-							if err = c.setInitialSendWindow(setting.Value); err != nil {
+							delta := int(setting.Value - remote.InitialWindowSize())
+							if err = c.setInitialSendWindow(delta); err != nil {
 								c.handleErr(err)
-								continue
+								continue loop
 							}
 						case SettingHeaderTableSize:
 							c.frameWriter.SetMaxHeaderTableSize(setting.Value)
@@ -463,8 +469,13 @@ func (c *Conn) writeLoop() {
 							c.frameWriter.maxHeaderListSize = setting.Value
 						case SettingMaxFrameSize:
 							c.frameWriter.maxFrameSize = setting.Value
+						default:
+							continue set
 						}
+
+						remote.SetValue(setting.ID, setting.Value)
 					}
+					c.remote.settings.Store(remote)
 					v.Settings = nil
 				}
 			}
@@ -482,6 +493,13 @@ func (c *Conn) writeLoop() {
 			}
 
 			if err != nil {
+				if settingsSyn {
+					select {
+					case <-c.settingsCh:
+					default:
+					}
+				}
+
 				c.handleErr(err)
 			}
 		case <-c.closeCh:
@@ -563,7 +581,7 @@ again:
 	// After sending a GOAWAY frame, the sender can discard frames for
 	// streams initiated by the receiver with identifiers higher than the
 	// identified last stream.
-	if goAwaySent, ok := c.goAwaySent.Load().(*GoAwayFrame); ok {
+	if goAwaySent, ok := c.remote.goAway.Load().(*GoAwayFrame); ok {
 		if c.remote.validStreamID(frame.streamID()) && frame.streamID() > goAwaySent.LastStreamID {
 			// Flow-controlled frames (i.e., DATA) MUST be counted toward the
 			// connection flow-control window.
@@ -651,27 +669,23 @@ again:
 		if v.Ack {
 			select {
 			case settings := <-c.settingsCh:
-				if pushEnabled, ok := settings.PushEnabled(); ok {
-					if pushEnabled && c.server {
-						err = ConnError{
-							errors.New("server sent SETTINGS frame with ENABLE_PUSH specified"),
-							ErrCodeProtocol,
-						}
-						goto exit
+				if settings.PushEnabled() && c.server {
+					err = ConnError{
+						errors.New("server sent SETTINGS frame with ENABLE_PUSH specified"),
+						ErrCodeProtocol,
 					}
+					goto exit
 				}
+
+				local := c.settings.Load().(Settings)
+
 				for _, setting := range settings {
 					switch setting.ID {
 					case SettingEnablePush:
-						if setting.Value == 1 {
-							c.pushEnabled = true
-						} else {
-							c.pushEnabled = false
-						}
 					case SettingMaxConcurrentStreams:
-						atomic.StoreUint32(&c.remote.maxStreams, setting.Value)
 					case SettingInitialWindowSize:
-						if err = c.setInitialRecvWindow(setting.Value); err != nil {
+						delta := int(setting.Value - local.InitialWindowSize())
+						if err = c.setInitialRecvWindow(delta); err != nil {
 							goto exit
 						}
 					case SettingHeaderTableSize:
@@ -680,22 +694,26 @@ again:
 						c.frameReader.maxHeaderListSize = setting.Value
 					case SettingMaxFrameSize:
 						c.frameReader.maxFrameSize = setting.Value
+					default:
+						continue
 					}
+
+					local.SetValue(setting.ID, setting.Value)
 				}
+
+				c.settings.Store(local)
 			default:
 				err = errors.New("received SETTINGS frame but empty pool")
 			}
 			break
 		}
 
-		if pushEnabled, ok := v.PushEnabled(); ok {
-			if pushEnabled && c.remote.server {
-				err = ConnError{
-					errors.New("client received SETTINGS frame with ENABLE_PUSH specified for remote server"),
-					ErrCodeProtocol,
-				}
-				break
+		if v.PushEnabled() && !c.server {
+			err = ConnError{
+				errors.New("client received SETTINGS frame with ENABLE_PUSH specified for remote server"),
+				ErrCodeProtocol,
 			}
+			break
 		}
 		c.writeQueue.add(&SettingsFrame{true, v.Settings}, true)
 	case *PushPromiseFrame:
@@ -708,7 +726,7 @@ again:
 			err = ConnError{fmt.Errorf("stream %d is not active", v.StreamID), ErrCodeProtocol}
 			break
 		}
-		if !c.pushEnabled {
+		if !c.Settings().PushEnabled() {
 			err = ConnError{errors.New("server push not allowed"), ErrCodeProtocol}
 			break
 		}
@@ -720,7 +738,7 @@ again:
 			c.writeQueue.add(&PingFrame{true, v.Data}, true)
 		}
 	case *GoAwayFrame:
-		c.goAwayReceived.Store(v)
+		c.goAway.Store(v)
 
 		var streams []*stream
 
@@ -753,6 +771,9 @@ exit:
 	}
 	if err != nil {
 		if ne, ok := err.(net.Error); ok {
+
+			// TODO: handle temporary, write deadline
+
 			if ne.Temporary() {
 				goto again
 			}

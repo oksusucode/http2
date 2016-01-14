@@ -100,11 +100,11 @@ func (s *stream) compareAndSwapState(from, to StreamState) bool {
 					atomic.AddUint32(&s.conn.remote.numStreams, 1)
 				}
 
-				w := int(atomic.LoadUint32(&s.conn.initialRecvWindow))
+				w := int(s.conn.Settings().InitialWindowSize())
 				s.recvFlow = &flowController{s: s, win: w, winUpperBound: w, processedWin: w}
 
 				if to != StateHalfClosedLocal {
-					w = int(atomic.LoadUint32(&s.conn.initialSendWindow))
+					w = int(s.conn.RemoteSettings().InitialWindowSize())
 					s.sendFlow = &remoteFlowController{s: s, winCh: make(chan int, 1)}
 					s.sendFlow.incrementInitialWindow(w)
 				}
