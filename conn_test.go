@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+func Test(t *testing.T) {
+}
+
 func BenchmarkConnReadWriteC1_1K(b *testing.B) {
 	benchmark(b, 1, 1024)
 }
@@ -56,6 +59,7 @@ func benchmark(b *testing.B, c, n int) {
 	b.StopTimer()
 	close(ch)
 	wg.Wait()
+	time.Sleep(100 * time.Millisecond)
 	if err := client.Close(); err != nil {
 		b.Fatal(err)
 	}
