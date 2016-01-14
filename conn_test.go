@@ -59,13 +59,13 @@ func benchmark(b *testing.B, c, n int) {
 	b.StopTimer()
 	close(ch)
 	wg.Wait()
-	time.Sleep(100 * time.Millisecond)
 	if err := client.Close(); err != nil {
 		b.Fatal(err)
 	}
 	if err := server.Close(); err != nil {
 		b.Fatal(err)
 	}
+	time.Sleep(100 * time.Millisecond)
 	if atomic.LoadInt64(&client.tx) != server.rx {
 		b.Fatal("lost data")
 	}
