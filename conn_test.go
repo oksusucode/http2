@@ -13,23 +13,39 @@ import (
 func Test(t *testing.T) {
 }
 
-func BenchmarkConnReadWriteC1_1K(b *testing.B) {
-	benchmark(b, 1, 1024)
+func BenchmarkConnReadWrite1K_C1(b *testing.B) {
+	benchmarkConnReadWrite(b, 1024, 1)
 }
 
-func BenchmarkConnReadWriteC8_1K(b *testing.B) {
-	benchmark(b, 8, 1024)
+func BenchmarkConnReadWrite1K_C8(b *testing.B) {
+	benchmarkConnReadWrite(b, 1024, 8)
 }
 
-func BenchmarkConnReadWriteC64_1K(b *testing.B) {
-	benchmark(b, 64, 1024)
+func BenchmarkConnReadWrite1K_C64(b *testing.B) {
+	benchmarkConnReadWrite(b, 1024, 64)
 }
 
-func BenchmarkConnReadWriteC512_1K(b *testing.B) {
-	benchmark(b, 512, 1024)
+func BenchmarkConnReadWrite1K_C512(b *testing.B) {
+	benchmarkConnReadWrite(b, 1024, 512)
 }
 
-func benchmark(b *testing.B, c, n int) {
+func BenchmarkConnReadWrite1M_C1(b *testing.B) {
+	benchmarkConnReadWrite(b, 1024*1024, 1)
+}
+
+func BenchmarkConnReadWrite1M_C8(b *testing.B) {
+	benchmarkConnReadWrite(b, 1024*1024, 8)
+}
+
+func BenchmarkConnReadWrite1M_C64(b *testing.B) {
+	benchmarkConnReadWrite(b, 1024*1024, 64)
+}
+
+func BenchmarkConnReadWrite1M_C512(b *testing.B) {
+	benchmarkConnReadWrite(b, 1024*1024, 512)
+}
+
+func benchmarkConnReadWrite(b *testing.B, n, c int) {
 	sc, cc := pipe(true)
 	server, client := &conn{Conn: sc, pending: map[uint32]int64{}}, &conn{Conn: cc, pending: map[uint32]int64{}}
 	go server.serve()
@@ -105,7 +121,7 @@ func (c *conn) serve() {
 		case *HeadersFrame:
 			endStream = v.EndStream
 		}
-		if endStream && c.server {
+		if endStream && c.ServerConn() {
 			go c.writeBytes(frame.streamID(), int(c.pending[frame.streamID()]))
 		}
 	}
