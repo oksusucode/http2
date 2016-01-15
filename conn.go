@@ -75,10 +75,10 @@ func NewConnSize(rwc io.ReadWriteCloser, server bool, readBufSize, writeBufSize 
 	if server {
 		conn.nextStreamID = 2
 		conn.settings.Store(Settings{setting{SettingEnablePush, 0}})
-		conn.remote.nextStreamID = 1
+		conn.remote.nextStreamID = 3
 		conn.remote.settings.Store(Settings{})
 	} else {
-		conn.nextStreamID = 1
+		conn.nextStreamID = 3
 		conn.settings.Store(Settings{})
 		conn.remote.nextStreamID = 2
 		conn.remote.settings.Store(Settings{setting{SettingEnablePush, 0}})
@@ -175,7 +175,7 @@ func (s *connState) idleStream(streamID uint32) (*stream, error) {
 	// Receivers of a GOAWAY frame MUST NOT open
 	// additional streams on the connection, although a new connection can
 	// be established for new streams.
-	if goAway, ok := s.conn.goAway.Load().(*GoAwayFrame); ok {
+	if goAway, received := s.conn.goAway.Load().(*GoAwayFrame); received {
 		return nil, ConnError{
 			fmt.Errorf("received a GOAWAY frame with last stream id %d", goAway.LastStreamID),
 			ErrCodeProtocol,
@@ -300,6 +300,9 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 			c.writeQueue.add(frame, false)
 		}
 	case FramePing:
+		if frame.(*PingFrame).Ack {
+			return errors.New("not allowed to send ACK ping frame")
+		}
 		c.writeQueue.add(frame, true)
 	case FrameGoAway:
 		// An endpoint MAY send multiple GOAWAY frames if circumstances change.
@@ -310,9 +313,9 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 		// streams could have been acted upon.  Endpoints MUST NOT increase the
 		// value they send in the last stream identifier, since the peers might
 		// already have retried unprocessed requests on another connection.
-		if goAwaySent, ok := c.remote.goAway.Load().(*GoAwayFrame); ok {
-			if frame.(*GoAwayFrame).LastStreamID > goAwaySent.LastStreamID {
-				return fmt.Errorf("last stream ID must be <= %d", goAwaySent.LastStreamID)
+		if goAway, sent := c.remote.goAway.Load().(*GoAwayFrame); sent {
+			if frame.(*GoAwayFrame).LastStreamID > goAway.LastStreamID {
+				return fmt.Errorf("last stream ID must be <= %d", goAway.LastStreamID)
 			}
 		}
 
@@ -458,7 +461,7 @@ loop:
 						case SettingEnablePush:
 						case SettingMaxConcurrentStreams:
 						case SettingInitialWindowSize:
-							delta := int(setting.Value - remote.InitialWindowSize())
+							delta := int(setting.Value) - int(remote.InitialWindowSize())
 							if err = c.setInitialSendWindow(delta); err != nil {
 								c.handleErr(err)
 								continue loop
@@ -581,8 +584,8 @@ again:
 	// After sending a GOAWAY frame, the sender can discard frames for
 	// streams initiated by the receiver with identifiers higher than the
 	// identified last stream.
-	if goAwaySent, ok := c.remote.goAway.Load().(*GoAwayFrame); ok {
-		if c.remote.validStreamID(frame.streamID()) && frame.streamID() > goAwaySent.LastStreamID {
+	if goAway, sent := c.remote.goAway.Load().(*GoAwayFrame); sent {
+		if c.remote.validStreamID(frame.streamID()) && frame.streamID() > goAway.LastStreamID {
 			// Flow-controlled frames (i.e., DATA) MUST be counted toward the
 			// connection flow-control window.
 			if dataFrame, ok := frame.(*DataFrame); ok {
@@ -625,7 +628,6 @@ again:
 				}
 				if ce, ok := stream.recvFlow.returnBytes(dataLen).(ConnError); ok {
 					err = ce
-					break
 				}
 			}
 			break
@@ -684,7 +686,7 @@ again:
 					case SettingEnablePush:
 					case SettingMaxConcurrentStreams:
 					case SettingInitialWindowSize:
-						delta := int(setting.Value - local.InitialWindowSize())
+						delta := int(setting.Value) - int(local.InitialWindowSize())
 						if err = c.setInitialRecvWindow(delta); err != nil {
 							goto exit
 						}
