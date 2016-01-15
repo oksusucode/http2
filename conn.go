@@ -37,8 +37,10 @@ type Conn struct {
 	*connState
 	remote *connState
 
-	idCh    chan struct{}
-	idState int32
+	idCh        chan struct{}
+	idState     int32
+	idTimer     *time.Timer
+	idTimeoutCh <-chan time.Time
 }
 
 const defaultBufSize = 4096
@@ -48,11 +50,10 @@ func NewConn(rwc io.ReadWriteCloser, server bool) *Conn {
 }
 
 func NewConnSize(rwc io.ReadWriteCloser, server bool, readBufSize, writeBufSize int) *Conn {
-	if readBufSize < defaultBufSize {
-		readBufSize = defaultBufSize
-	}
-	if writeBufSize < defaultBufSize {
-		writeBufSize = defaultBufSize
+	const minReadBufSize = 64
+
+	if readBufSize < minReadBufSize {
+		readBufSize = minReadBufSize
 	}
 
 	conn := new(Conn)
@@ -100,12 +101,31 @@ func (c *Conn) NumActiveStreams() uint32 {
 }
 
 func (c *Conn) NextStreamID() (uint32, error) {
+again:
 	select {
-	case <-c.idCh:
-		atomic.StoreInt32(&c.idState, 1)
-		return c.nextStreamID, nil
 	case <-c.closeCh:
 		return 0, ErrClosed
+	case <-c.idCh:
+		const cancelTimeout = 1 * time.Second
+
+		atomic.StoreInt32(&c.idState, 1)
+		if c.idTimer == nil {
+			c.idTimer = time.NewTimer(cancelTimeout)
+			c.idTimeoutCh = c.idTimer.C
+		} else {
+			c.idTimer.Reset(cancelTimeout)
+		}
+		return c.nextStreamID, nil
+	case <-c.idTimeoutCh:
+		select {
+		case <-c.closeCh:
+			return 0, ErrClosed
+		default:
+			if atomic.CompareAndSwapInt32(&c.idState, 1, 0) {
+				c.idCh <- struct{}{}
+			}
+			goto again
+		}
 	}
 }
 
@@ -363,9 +383,9 @@ func (c *Conn) Closed() bool {
 	return atomic.LoadInt32(&c.closed) == 1
 }
 
-var defaultCloseTimeout = 3 * time.Second
-
 func (c *Conn) Close() error {
+	const defaultCloseTimeout = 3 * time.Second
+
 	return c.CloseTimeout(defaultCloseTimeout)
 }
 
@@ -376,6 +396,10 @@ func (c *Conn) CloseTimeout(timeout time.Duration) error {
 		c.WriteFrame(&GoAwayFrame{LastStreamID: c.LastStreamID(), ErrCode: ErrCodeNo})
 
 		c.flowControlWriter.Flush()
+
+		if timeout <= 0 {
+			return c.close()
+		}
 
 		select {
 		case <-c.closeCh:
@@ -406,6 +430,9 @@ func (c *Conn) close() error {
 		}
 	}
 	close(c.closeCh)
+	if c.idTimer != nil {
+		c.idTimer.Stop()
+	}
 	return c.rwc.Close()
 }
 
