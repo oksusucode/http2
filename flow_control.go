@@ -198,8 +198,7 @@ func (c *flowController) windowUpdate() error {
 }
 
 func (c *Conn) InitialSendWindow(uint32) uint32 {
-	remote := c.remote.settings.Load().(Settings)
-	return remote.InitialWindowSize()
+	return c.RemoteSettings().InitialWindowSize()
 }
 
 func (c *Conn) SendWindow(streamID uint32) uint32 {
