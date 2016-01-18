@@ -108,13 +108,15 @@ again:
 	case <-c.idCh:
 		const cancelTimeout = 1 * time.Second
 
-		atomic.StoreInt32(&c.idState, 1)
 		if c.idTimer == nil {
 			c.idTimer = time.NewTimer(cancelTimeout)
 			c.idTimeoutCh = c.idTimer.C
 		} else {
 			c.idTimer.Reset(cancelTimeout)
 		}
+
+		atomic.StoreInt32(&c.idState, 1)
+
 		return c.nextStreamID, nil
 	case <-c.idTimeoutCh:
 		select {
@@ -698,19 +700,18 @@ again:
 		if v.Ack {
 			select {
 			case settings := <-c.settingsCh:
-				if settings.PushEnabled() && c.server {
-					err = ConnError{
-						errors.New("server sent SETTINGS frame with ENABLE_PUSH specified"),
-						ErrCodeProtocol,
-					}
-					goto exit
-				}
-
 				local := c.settings.Load().(Settings)
 
 				for _, setting := range settings {
 					switch setting.ID {
 					case SettingEnablePush:
+						if setting.Value == 1 && c.server {
+							err = ConnError{
+								errors.New("server sent SETTINGS frame with ENABLE_PUSH specified"),
+								ErrCodeProtocol,
+							}
+							goto exit
+						}
 					case SettingMaxConcurrentStreams:
 					case SettingInitialWindowSize:
 						delta := int(setting.Value) - int(local.InitialWindowSize())
@@ -737,13 +738,19 @@ again:
 			break
 		}
 
-		if v.PushEnabled() && !c.server {
-			err = ConnError{
-				errors.New("client received SETTINGS frame with ENABLE_PUSH specified for remote server"),
-				ErrCodeProtocol,
+		for _, setting := range v.Settings {
+			switch setting.ID {
+			case SettingEnablePush:
+				if setting.Value == 1 && !c.server {
+					err = ConnError{
+						errors.New("client received SETTINGS frame with ENABLE_PUSH specified for remote server"),
+						ErrCodeProtocol,
+					}
+					break
+				}
 			}
-			break
 		}
+
 		c.writeQueue.add(&SettingsFrame{true, v.Settings}, true)
 	case *PushPromiseFrame:
 		stream := c.stream(frame.streamID())
