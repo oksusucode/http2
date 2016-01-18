@@ -316,6 +316,7 @@ func (f *PriorityFrame) readFrom(r *frameReader) error {
 		}
 	}
 
+	f.StreamID = r.streamID
 	x := r.readUint32()
 	f.StreamDependency = x & 0x7fffffff
 	f.Exclusive = f.StreamDependency != x
