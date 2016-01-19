@@ -76,10 +76,10 @@ func NewConnSize(rwc io.ReadWriteCloser, server bool, readBufSize, writeBufSize 
 	if server {
 		conn.nextStreamID = 2
 		conn.settings.Store(Settings{setting{SettingEnablePush, 0}})
-		conn.remote.nextStreamID = 3
+		conn.remote.nextStreamID = 1
 		conn.remote.settings.Store(Settings{})
 	} else {
-		conn.nextStreamID = 3
+		conn.nextStreamID = 1
 		conn.settings.Store(Settings{})
 		conn.remote.nextStreamID = 2
 		conn.remote.settings.Store(Settings{setting{SettingEnablePush, 0}})
