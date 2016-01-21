@@ -1,7 +1,7 @@
 
 A Go implementation of the HTTP/2 protocol.
 
-It is useful for client/server application development using the HTTP/2 connection/stream directly. (eg: gRPC)
+It is useful for client/server application development using the HTTP/2 connection/stream directly. (e.g. gRPC)
 
 > currently under heavy development.
 
@@ -10,9 +10,18 @@ It is useful for client/server application development using the HTTP/2 connecti
 ### Server
 
 ```go
+    server := &http2.Server{
+        Addr:       ":http",
+        Handler:    sayHello,
+    }
+
+    server.ListenAndServe()
+
+    ---
+
     func sayHello(conn *http2.Conn) {
         for !conn.Closed() {
-            frame, err := conn.ReadFrame()
+            frame, _ := conn.ReadFrame()
 
             log.Printf("received %s frame\n", frame.Type())
 
@@ -27,19 +36,11 @@ It is useful for client/server application development using the HTTP/2 connecti
                 buf := new(bytes.Buffer)
                 buf.ReadFrom(v.Data)
 
-                streamID, endStream = v.StreamID, v.EndStream
+                streamID = v.StreamID
+                endStream = v.EndStream
             case *http2.HeadersFrame:
-                streamID, endStream = v.StreamID, v.EndStream
-
-            // case *http2.PriorityFrame:
-            // case *http2.RSTStreamFrame:
-            // case *http2.SettingsFrame:
-            // case *http2.PushPromiseFrame:
-            // case *http2.PingFrame:
-            // case *http2.GoAwayFrame:
-            // case *http2.WindowUpdateFrame:
-            // case *http2.UnknownFrame:
-
+                streamID = v.StreamID
+                endStream = v.EndStream
             }
 
             if endStream {
@@ -62,19 +63,12 @@ It is useful for client/server application development using the HTTP/2 connecti
             }
         }
     }
-
-    server := &http2.Server{
-        Addr:       ":http",
-        Handler:    sayHello,
-    }
-
-    server.ListenAndServe()
 ```
 
 ### Client
 
 ```go
-    conn, err := http2.Dial(":http")
+    conn, _ := http2.Dial(":http")
 
     go readLoop(conn)
 
@@ -118,3 +112,27 @@ It is useful for client/server application development using the HTTP/2 connecti
         }
     }
 ```
+
+## Benchmarks
+
+### HTTP/2 over TCP (Upgrade)
+
+    BenchmarkConnReadWriteTCP_1K_C1-8      50000         31527 ns/op
+    BenchmarkConnReadWriteTCP_1K_C8-8      50000         32138 ns/op
+    BenchmarkConnReadWriteTCP_1K_C64-8     50000         32881 ns/op
+    BenchmarkConnReadWriteTCP_1K_C512-8    50000         32448 ns/op
+    BenchmarkConnReadWriteTCP_1M_C1-8        500       4113463 ns/op
+    BenchmarkConnReadWriteTCP_1M_C8-8       1000       3585480 ns/op
+    BenchmarkConnReadWriteTCP_1M_C64-8     10000       3668482 ns/op
+    BenchmarkConnReadWriteTCP_1M_C512-8    10000       2893772 ns/op
+
+### HTTP/2 over TLS (ALPN)
+
+    BenchmarkConnReadWriteTLS_1K_C1-8      30000         51752 ns/op
+    BenchmarkConnReadWriteTLS_1K_C8-8      30000         55804 ns/op
+    BenchmarkConnReadWriteTLS_1K_C64-8     30000         50793 ns/op
+    BenchmarkConnReadWriteTLS_1K_C512-8    30000         46517 ns/op
+    BenchmarkConnReadWriteTLS_1M_C1-8        100      16708173 ns/op
+    BenchmarkConnReadWriteTLS_1M_C8-8        100      10880645 ns/op
+    BenchmarkConnReadWriteTLS_1M_C64-8     10000      18013781 ns/op
+    BenchmarkConnReadWriteTLS_1M_C512-8    10000      16912103 ns/op
