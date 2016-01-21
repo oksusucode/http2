@@ -21,6 +21,7 @@ type Conn struct {
 	handshakeL        sync.Mutex
 	handshakeComplete bool
 	handshakeErr      error
+	upgradeFunc       func() error
 	upgradeFrames     []Frame
 
 	rio         sync.Mutex
@@ -62,7 +63,7 @@ type Config struct {
 
 var defaultConfig = Config{}
 
-func NewConn(rwc io.ReadWriteCloser, server bool, config *Config) *Conn {
+func newConn(rwc io.ReadWriteCloser, server bool, config *Config) *Conn {
 	conn := new(Conn)
 	conn.config = config
 	if conn.config == nil {
@@ -335,7 +336,7 @@ func (c *Conn) WriteFrame(frame Frame) error {
 	}
 
 	if frame == nil {
-		return errors.New("frame must be not nil")
+		return errors.New("frame must be non-nil")
 	}
 
 	return c.writeFrame(frame)
@@ -383,11 +384,6 @@ func (c *Conn) writeFrame(frame Frame) (err error) {
 			return errors.New("not allowed to send ACK settings frame")
 		}
 
-		// TODO:
-		//	settingsQueue
-		//	settingsEntry
-		//		timeout
-		//
 		// If the sender of a SETTINGS frame does not receive an acknowledgement
 		// within a reasonable amount of time, it MAY issue a connection error
 		// (Section 5.4.1) of type SETTINGS_TIMEOUT.
@@ -933,6 +929,10 @@ var (
 	errBadConnPreface   = errors.New("http2: bad connection preface")
 )
 
+type upgradeError string
+
+func (e upgradeError) Error() string { return fmt.Sprintf("http2: %s", string(e)) }
+
 func (c *Conn) Handshake() error {
 	c.handshakeL.Lock()
 	defer c.handshakeL.Unlock()
@@ -970,6 +970,10 @@ func (c *Conn) Handshake() error {
 
 	if err := c.handshakeErr; err != nil {
 		if err == ErrHandshakeTimeout {
+			c.close()
+			return err
+		}
+		if _, ok := err.(upgradeError); ok {
 			c.close()
 			return err
 		}

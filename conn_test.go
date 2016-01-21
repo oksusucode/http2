@@ -11,6 +11,50 @@ import (
 	"time"
 )
 
+func test(t *testing.T) {
+	lis, err := net.Listen("tcp", ":8989")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		s, err := lis.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ss := ServerConn(s, nil)
+		if err = ss.Handshake(); err != nil {
+			t.Fatal(err)
+		}
+		for !ss.Closed() {
+			var frame Frame
+			if frame, err = ss.ReadFrame(); err != nil {
+				t.Fatal(err)
+			} else {
+				es := false
+				switch v := frame.(type) {
+				case *DataFrame:
+					es = v.EndStream
+				case *HeadersFrame:
+					es = v.EndStream
+				}
+				if es {
+					headers := &HeadersFrame{
+						frame.streamID(),
+						make(Header),
+						Priority{},
+						0, true,
+					}
+					headers.SetStatus("200")
+					headers.Set("content-length", "0")
+					if err = ss.WriteFrame(headers); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		}
+	}
+}
+
 func BenchmarkConnReadWriteTCP_1K_C1(b *testing.B) {
 	benchmarkConnReadWrite(b, false, 1024, 1)
 }
@@ -205,7 +249,7 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 				}
 				s = tls.Server(s, sc.TLSConfig)
 			}
-			server = NewConn(s, true, sc)
+			server = newConn(s, true, sc)
 			if err = server.Handshake(); err != nil {
 				panic(err)
 			}
@@ -227,7 +271,7 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 		}
 		c = tls.Client(c, cc.TLSConfig)
 	}
-	client = NewConn(c, false, cc)
+	client = newConn(c, false, cc)
 	if err = client.Handshake(); err != nil {
 		panic(err)
 	}
