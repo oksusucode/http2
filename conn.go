@@ -2,6 +2,7 @@ package http2
 
 import (
 	"bufio"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -12,8 +13,15 @@ import (
 )
 
 type Conn struct {
+	config *Config
+
 	rwc io.ReadWriteCloser
 	buf *bufio.ReadWriter
+
+	handshakeL        sync.Mutex
+	handshakeComplete bool
+	handshakeErr      error
+	upgradeFrames     []Frame
 
 	rio         sync.Mutex
 	frameReader *frameReader
@@ -43,22 +51,40 @@ type Conn struct {
 	idTimeoutCh <-chan time.Time
 }
 
-const defaultBufSize = 4096
-
-func NewConn(rwc io.ReadWriteCloser, server bool) *Conn {
-	return NewConnSize(rwc, server, defaultBufSize, defaultBufSize)
+type Config struct {
+	TLSConfig          *tls.Config
+	InitialSettings    Settings
+	HandshakeTimeout   time.Duration
+	AllowLowTLSVersion bool
+	ReadBufSize        int
+	WriteBufSize       int
 }
 
-func NewConnSize(rwc io.ReadWriteCloser, server bool, readBufSize, writeBufSize int) *Conn {
-	const minReadBufSize = 64
+var defaultConfig = Config{}
 
+func NewConn(rwc io.ReadWriteCloser, server bool, config *Config) *Conn {
+	conn := new(Conn)
+	conn.config = config
+	if conn.config == nil {
+		conn.config = &defaultConfig
+	}
+	conn.rwc = rwc
+
+	const (
+		defaultBufSize = 4096
+		minReadBufSize = len(ClientPreface)
+	)
+
+	readBufSize := conn.config.ReadBufSize
+
+	if readBufSize <= 0 {
+		readBufSize = defaultBufSize
+	}
 	if readBufSize < minReadBufSize {
 		readBufSize = minReadBufSize
 	}
 
-	conn := new(Conn)
-	conn.rwc = rwc
-	conn.buf = bufio.NewReadWriter(bufio.NewReaderSize(rwc, readBufSize), bufio.NewWriterSize(rwc, writeBufSize))
+	conn.buf = bufio.NewReadWriter(bufio.NewReaderSize(rwc, readBufSize), bufio.NewWriterSize(rwc, conn.config.WriteBufSize))
 	conn.frameReader = newFrameReader(conn.buf.Reader, readBufSize)
 	conn.frameWriter = newFrameWriter(conn.buf.Writer)
 	conn.writeQueue = &writeQueue{ch: make(chan Frame, 1)}
@@ -117,7 +143,10 @@ again:
 
 		atomic.StoreInt32(&c.idState, 1)
 
-		return c.nextStreamID, nil
+		if c.nextStreamID > 1 {
+			return c.nextStreamID, nil
+		}
+		return c.nextStreamID + 2, nil
 	case <-c.idTimeoutCh:
 		select {
 		case <-c.closeCh:
@@ -236,14 +265,83 @@ func (s *connState) validStreamID(streamID uint32) bool {
 	return s.server == ((streamID&1) == 0) && streamID > 0
 }
 
-func (c *Conn) WriteFrame(frame Frame) (err error) {
+func (s *connState) applySettings(settings Settings) (err error) {
+	cur := s.settings.Load().(Settings)
+	local := s.conn.connState == s
+	for _, setting := range settings {
+		switch setting.ID {
+		case SettingEnablePush:
+			if setting.Value == 1 {
+				switch {
+				case local && s.server:
+					return ConnError{
+						errors.New("server sent SETTINGS frame with ENABLE_PUSH specified"),
+						ErrCodeProtocol,
+					}
+				case !local && !s.server:
+					return ConnError{
+						errors.New("client received SETTINGS frame with ENABLE_PUSH specified for remote server"),
+						ErrCodeProtocol,
+					}
+				}
+			}
+		case SettingMaxConcurrentStreams:
+		case SettingInitialWindowSize:
+			delta := int(setting.Value) - int(cur.InitialWindowSize())
+			if local {
+				err = s.conn.setInitialRecvWindow(delta)
+			} else {
+				err = s.conn.setInitialSendWindow(delta)
+			}
+			if err != nil {
+				return
+			}
+		case SettingHeaderTableSize:
+			if local {
+				s.conn.frameReader.SetMaxHeaderTableSize(setting.Value)
+			} else {
+				s.conn.frameWriter.SetMaxHeaderTableSize(setting.Value)
+			}
+		case SettingMaxHeaderListSize:
+			if local {
+				s.conn.frameReader.maxHeaderListSize = setting.Value
+			} else {
+				s.conn.frameWriter.maxHeaderListSize = setting.Value
+			}
+		case SettingMaxFrameSize:
+			if local {
+				s.conn.frameReader.maxFrameSize = setting.Value
+			} else {
+				s.conn.frameWriter.maxFrameSize = setting.Value
+			}
+		default:
+			// An endpoint that receives a SETTINGS frame with any unknown or
+			// unsupported identifier MUST ignore that setting.
+			continue
+		}
+		cur.SetValue(setting.ID, setting.Value)
+	}
+	s.settings.Store(cur)
+	return
+}
+
+func (c *Conn) WriteFrame(frame Frame) error {
 	if c.Closed() {
 		return ErrClosed
 	}
+
+	if err := c.Handshake(); err != nil {
+		return err
+	}
+
 	if frame == nil {
 		return errors.New("frame must be not nil")
 	}
 
+	return c.writeFrame(frame)
+}
+
+func (c *Conn) writeFrame(frame Frame) (err error) {
 	switch frame.Type() {
 	case FrameData:
 		stream := c.stream(frame.streamID())
@@ -284,6 +382,16 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 		if v.Ack {
 			return errors.New("not allowed to send ACK settings frame")
 		}
+
+		// TODO:
+		//	settingsQueue
+		//	settingsEntry
+		//		timeout
+		//
+		// If the sender of a SETTINGS frame does not receive an acknowledgement
+		// within a reasonable amount of time, it MAY issue a connection error
+		// (Section 5.4.1) of type SETTINGS_TIMEOUT.
+
 		select {
 		case c.settingsCh <- v.Settings:
 			c.writeQueue.add(frame, true)
@@ -365,7 +473,7 @@ func (c *Conn) WriteFrame(frame Frame) (err error) {
 			err = stream.recvFlow.incrementWindow(int(frame.(*WindowUpdateFrame).WindowSizeIncrement))
 		}
 	default:
-		c.writeQueue.add(frame, false)
+		c.writeQueue.add(frame, frame == nil)
 	}
 
 	if err != nil {
@@ -391,11 +499,13 @@ func (c *Conn) Close() error {
 	return c.CloseTimeout(defaultCloseTimeout)
 }
 
+var ErrClosed = errors.New("http2: connection has been closed")
+
 func (c *Conn) CloseTimeout(timeout time.Duration) error {
 	if atomic.CompareAndSwapInt32(&c.closing, 0, 1) {
 		// Endpoints SHOULD send a GOAWAY frame when ending a connection,
 		// providing that circumstances permit it.
-		c.WriteFrame(&GoAwayFrame{LastStreamID: c.LastStreamID(), ErrCode: ErrCodeNo})
+		c.writeFrame(&GoAwayFrame{LastStreamID: c.LastStreamID(), ErrCode: ErrCodeNo})
 
 		c.flowControlWriter.Flush()
 
@@ -483,31 +593,10 @@ loop:
 				v := frame.(*SettingsFrame)
 				settingsSyn = !v.Ack
 				if v.Ack {
-					remote := c.remote.settings.Load().(Settings)
-				set:
-					for _, setting := range v.Settings {
-						switch setting.ID {
-						case SettingEnablePush:
-						case SettingMaxConcurrentStreams:
-						case SettingInitialWindowSize:
-							delta := int(setting.Value) - int(remote.InitialWindowSize())
-							if err = c.setInitialSendWindow(delta); err != nil {
-								c.handleErr(err)
-								continue loop
-							}
-						case SettingHeaderTableSize:
-							c.frameWriter.SetMaxHeaderTableSize(setting.Value)
-						case SettingMaxHeaderListSize:
-							c.frameWriter.maxHeaderListSize = setting.Value
-						case SettingMaxFrameSize:
-							c.frameWriter.maxFrameSize = setting.Value
-						default:
-							continue set
-						}
-
-						remote.SetValue(setting.ID, setting.Value)
+					if err = c.remote.applySettings(v.Settings); err != nil {
+						c.handleErr(err)
+						continue loop
 					}
-					c.remote.settings.Store(remote)
 					v.Settings = nil
 				}
 			}
@@ -593,10 +682,24 @@ func (w *writeQueue) add(frame Frame, control bool) {
 	}
 }
 
-func (c *Conn) ReadFrame() (frame Frame, err error) {
+func (c *Conn) ReadFrame() (Frame, error) {
+	if err := c.Handshake(); err != nil {
+		return nil, err
+	}
+
 	c.rio.Lock()
 	defer c.rio.Unlock()
 
+	if len(c.upgradeFrames) > 0 {
+		frame := c.upgradeFrames[0]
+		c.upgradeFrames = c.upgradeFrames[1:]
+		return frame, nil
+	}
+
+	return c.readFrame()
+}
+
+func (c *Conn) readFrame() (frame Frame, err error) {
 	if c.lastData != nil {
 		err = c.lastData.returnBytesLocked()
 		c.lastData = nil
@@ -700,58 +803,23 @@ again:
 		if v.Ack {
 			select {
 			case settings := <-c.settingsCh:
-				local := c.settings.Load().(Settings)
-
-				for _, setting := range settings {
-					switch setting.ID {
-					case SettingEnablePush:
-						if setting.Value == 1 && c.server {
-							err = ConnError{
-								errors.New("server sent SETTINGS frame with ENABLE_PUSH specified"),
-								ErrCodeProtocol,
-							}
-							goto exit
-						}
-					case SettingMaxConcurrentStreams:
-					case SettingInitialWindowSize:
-						delta := int(setting.Value) - int(local.InitialWindowSize())
-						if err = c.setInitialRecvWindow(delta); err != nil {
-							goto exit
-						}
-					case SettingHeaderTableSize:
-						c.frameReader.SetMaxHeaderTableSize(setting.Value)
-					case SettingMaxHeaderListSize:
-						c.frameReader.maxHeaderListSize = setting.Value
-					case SettingMaxFrameSize:
-						c.frameReader.maxFrameSize = setting.Value
-					default:
-						continue
-					}
-
-					local.SetValue(setting.ID, setting.Value)
+				if err = c.applySettings(settings); err != nil {
+					goto exit
 				}
-
-				c.settings.Store(local)
 			default:
-				err = errors.New("received SETTINGS frame but empty pool")
 			}
-			break
-		}
-
-		for _, setting := range v.Settings {
-			switch setting.ID {
-			case SettingEnablePush:
-				if setting.Value == 1 && !c.server {
+		} else {
+			if enablePush, exists := v.Settings.value(SettingEnablePush); exists {
+				if enablePush == 1 && !c.server {
 					err = ConnError{
 						errors.New("client received SETTINGS frame with ENABLE_PUSH specified for remote server"),
 						ErrCodeProtocol,
 					}
-					break
+					goto exit
 				}
 			}
+			c.writeQueue.add(&SettingsFrame{true, v.Settings}, true)
 		}
-
-		c.writeQueue.add(&SettingsFrame{true, v.Settings}, true)
 	case *PushPromiseFrame:
 		stream := c.stream(frame.streamID())
 		if stream == nil {
@@ -860,6 +928,65 @@ func (r *data) returnBytesLocked() error {
 	return r.err
 }
 
+var (
+	ErrHandshakeTimeout = errors.New("http2: handshake timed out")
+	errBadConnPreface   = errors.New("http2: bad connection preface")
+)
+
+func (c *Conn) Handshake() error {
+	c.handshakeL.Lock()
+	defer c.handshakeL.Unlock()
+
+	if err := c.handshakeErr; err != nil {
+		return err
+	}
+
+	if c.handshakeComplete {
+		return nil
+	}
+
+	if timeout := c.config.HandshakeTimeout; timeout > 0 {
+		done := make(chan struct{})
+		go func() {
+			if c.server {
+				c.handshakeErr = c.serverHandshake()
+			} else {
+				c.handshakeErr = c.clientHandshake()
+			}
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(timeout):
+			c.handshakeErr = ErrHandshakeTimeout
+		}
+	} else {
+		if c.server {
+			c.handshakeErr = c.serverHandshake()
+		} else {
+			c.handshakeErr = c.clientHandshake()
+		}
+	}
+
+	if err := c.handshakeErr; err != nil {
+		if err == ErrHandshakeTimeout {
+			c.close()
+			return err
+		}
+
+		// Clients and servers MUST treat an invalid connection preface as a
+		// connection error (Section 5.4.1) of type PROTOCOL_ERROR.
+		if err == errBadConnPreface {
+			err = ConnError{err, ErrCodeProtocol}
+		}
+		c.handleErr(err)
+	} else {
+		c.handshakeComplete = true
+	}
+
+	return c.handshakeErr
+}
+
 func (c *Conn) handleErr(err error) {
 	if err == nil || err == ErrClosed {
 		return
@@ -867,16 +994,14 @@ func (c *Conn) handleErr(err error) {
 
 	switch e := err.(type) {
 	case StreamError:
-		c.WriteFrame(&RSTStreamFrame{e.StreamID, e.ErrCode})
+		c.writeFrame(&RSTStreamFrame{e.StreamID, e.ErrCode})
 	case StreamErrorList:
 		for _, se := range e {
-			c.WriteFrame(&RSTStreamFrame{se.StreamID, se.ErrCode})
+			c.writeFrame(&RSTStreamFrame{se.StreamID, se.ErrCode})
 		}
 	case ConnError:
-		c.WriteFrame(&GoAwayFrame{c.LastStreamID(), e.ErrCode, []byte(e.Error())})
+		c.writeFrame(&GoAwayFrame{c.LastStreamID(), e.ErrCode, []byte(e.Error())})
 	default:
-		c.WriteFrame(&GoAwayFrame{c.LastStreamID(), ErrCodeInternal, []byte(e.Error())})
+		c.writeFrame(&GoAwayFrame{c.LastStreamID(), ErrCodeInternal, []byte(e.Error())})
 	}
 }
-
-var ErrClosed = errors.New("http2: connection has been closed")

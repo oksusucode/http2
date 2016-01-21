@@ -2,7 +2,8 @@ package http2
 
 import (
 	"bytes"
-	"io"
+	"crypto/rand"
+	"crypto/tls"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -10,43 +11,72 @@ import (
 	"time"
 )
 
-func Test(t *testing.T) {
+func BenchmarkConnReadWriteTCP_1K_C1(b *testing.B) {
+	benchmarkConnReadWrite(b, false, 1024, 1)
 }
 
-func BenchmarkConnReadWrite1K_C1(b *testing.B) {
-	benchmarkConnReadWrite(b, 1024, 1)
+func BenchmarkConnReadWriteTCP_1K_C8(b *testing.B) {
+	benchmarkConnReadWrite(b, false, 1024, 8)
 }
 
-func BenchmarkConnReadWrite1K_C8(b *testing.B) {
-	benchmarkConnReadWrite(b, 1024, 8)
+func BenchmarkConnReadWriteTCP_1K_C64(b *testing.B) {
+	benchmarkConnReadWrite(b, false, 1024, 64)
 }
 
-func BenchmarkConnReadWrite1K_C64(b *testing.B) {
-	benchmarkConnReadWrite(b, 1024, 64)
+func BenchmarkConnReadWriteTCP_1K_C512(b *testing.B) {
+	benchmarkConnReadWrite(b, false, 1024, 512)
 }
 
-func BenchmarkConnReadWrite1K_C512(b *testing.B) {
-	benchmarkConnReadWrite(b, 1024, 512)
+func BenchmarkConnReadWriteTCP_1M_C1(b *testing.B) {
+	benchmarkConnReadWrite(b, false, 1024*1024, 1)
 }
 
-func BenchmarkConnReadWrite1M_C1(b *testing.B) {
-	benchmarkConnReadWrite(b, 1024*1024, 1)
+func BenchmarkConnReadWriteTCP_1M_C8(b *testing.B) {
+	benchmarkConnReadWrite(b, false, 1024*1024, 8)
 }
 
-func BenchmarkConnReadWrite1M_C8(b *testing.B) {
-	benchmarkConnReadWrite(b, 1024*1024, 8)
+func BenchmarkConnReadWriteTCP_1M_C64(b *testing.B) {
+	benchmarkConnReadWrite(b, false, 1024*1024, 64)
 }
 
-func BenchmarkConnReadWrite1M_C64(b *testing.B) {
-	benchmarkConnReadWrite(b, 1024*1024, 64)
+func BenchmarkConnReadWriteTCP_1M_C512(b *testing.B) {
+	benchmarkConnReadWrite(b, false, 1024*1024, 512)
 }
 
-func BenchmarkConnReadWrite1M_C512(b *testing.B) {
-	benchmarkConnReadWrite(b, 1024*1024, 512)
+func BenchmarkConnReadWriteTLS_1K_C1(b *testing.B) {
+	benchmarkConnReadWrite(b, true, 1024, 1)
 }
 
-func benchmarkConnReadWrite(b *testing.B, n, c int) {
-	sc, cc := pipe(true)
+func BenchmarkConnReadWriteTLS_1K_C8(b *testing.B) {
+	benchmarkConnReadWrite(b, true, 1024, 8)
+}
+
+func BenchmarkConnReadWriteTLS_1K_C64(b *testing.B) {
+	benchmarkConnReadWrite(b, true, 1024, 64)
+}
+
+func BenchmarkConnReadWriteTLS_1K_C512(b *testing.B) {
+	benchmarkConnReadWrite(b, true, 1024, 512)
+}
+
+func BenchmarkConnReadWriteTLS_1M_C1(b *testing.B) {
+	benchmarkConnReadWrite(b, true, 1024*1024, 1)
+}
+
+func BenchmarkConnReadWriteTLS_1M_C8(b *testing.B) {
+	benchmarkConnReadWrite(b, true, 1024*1024, 8)
+}
+
+func BenchmarkConnReadWriteTLS_1M_C64(b *testing.B) {
+	benchmarkConnReadWrite(b, true, 1024*1024, 64)
+}
+
+func BenchmarkConnReadWriteTLS_1M_C512(b *testing.B) {
+	benchmarkConnReadWrite(b, true, 1024*1024, 512)
+}
+
+func benchmarkConnReadWrite(b *testing.B, overTLS bool, n, c int) {
+	sc, cc := pipe(overTLS)
 	server, client := &conn{Conn: sc, pending: map[uint32]int64{}}, &conn{Conn: cc, pending: map[uint32]int64{}}
 	go server.serve()
 	go client.serve()
@@ -76,10 +106,10 @@ func benchmarkConnReadWrite(b *testing.B, n, c int) {
 	close(ch)
 	wg.Wait()
 	if err := client.Close(); err != nil {
-		b.Fatal(err)
+		b.Log(err)
 	}
 	if err := server.Close(); err != nil {
-		b.Fatal(err)
+		b.Log(err)
 	}
 	time.Sleep(100 * time.Millisecond)
 	if atomic.LoadInt64(&client.tx) != server.rx {
@@ -142,49 +172,69 @@ func (c *conn) writeBytes(streamID uint32, n int) (err error) {
 	return
 }
 
-func pipe(tcp bool) (server *Conn, client *Conn) {
-	if tcp {
-		done := make(chan struct{})
-		addr := &net.TCPAddr{Port: 8989}
-		for {
-			lis, err := net.ListenTCP("tcp", addr)
-			if err != nil {
-				if addr.Port > 65535 {
-					panic(err)
-				}
-				addr.Port++
-				continue
+func pipe(overTLS bool) (server *Conn, client *Conn) {
+	done := make(chan struct{})
+	addr := &net.TCPAddr{Port: 8989}
+	sc := &Config{}
+	cc := &Config{}
+	for {
+		lis, err := net.Listen("tcp", addr.String())
+		if err != nil {
+			if addr.Port > 65535 {
+				panic(err)
 			}
-			lis.SetDeadline(time.Now().Add(300 * time.Millisecond))
-			go func() {
-				s, err := lis.AcceptTCP()
+			addr.Port++
+			continue
+		}
+		go func() {
+			s, err := lis.Accept()
+			if err != nil {
+				panic(err)
+			}
+			s.(*net.TCPConn).SetNoDelay(true)
+			if overTLS {
+				cert, err := tls.LoadX509KeyPair("testdata/server.pem", "testdata/server.key")
 				if err != nil {
 					panic(err)
 				}
-				s.SetNoDelay(true)
-				server = NewConn(s, true)
-				lis.Close()
-				close(done)
-			}()
-			break
+				sc.TLSConfig = &tls.Config{
+					Certificates:             []tls.Certificate{cert},
+					Rand:                     rand.Reader,
+					NextProtos:               []string{VersionTLS},
+					PreferServerCipherSuites: true,
+				}
+				s = tls.Server(s, sc.TLSConfig)
+			}
+			server = NewConn(s, true, sc)
+			if err = server.Handshake(); err != nil {
+				panic(err)
+			}
+			lis.Close()
+			close(done)
+		}()
+		break
+	}
+	c, err := net.Dial("tcp", addr.String())
+	if err != nil {
+		panic(err)
+	}
+	c.(*net.TCPConn).SetNoDelay(true)
+	if overTLS {
+		cc.TLSConfig = &tls.Config{
+			Rand:               rand.Reader,
+			NextProtos:         []string{VersionTLS},
+			InsecureSkipVerify: true,
 		}
-		c, err := net.DialTCP("tcp", nil, addr)
-		if err != nil {
-			panic(err)
-		}
-		c.SetNoDelay(true)
-		client = NewConn(c, false)
-		<-done
-	} else {
-		type rwc struct {
-			io.Reader
-			io.Writer
-			io.Closer
-		}
-		sr, cw := io.Pipe()
-		cr, sw := io.Pipe()
-		server = NewConn(&rwc{sr, sw, sw}, true)
-		client = NewConn(&rwc{cr, cw, cw}, false)
+		c = tls.Client(c, cc.TLSConfig)
+	}
+	client = NewConn(c, false, cc)
+	if err = client.Handshake(); err != nil {
+		panic(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		panic("pipe: timed out")
 	}
 	return
 }

@@ -1,7 +1,11 @@
 package http2
 
-import (
-	"io"
+import "io"
+
+const (
+	VersionTLS    = "h2"
+	VersionTCP    = "h2c"
+	ClientPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 )
 
 type ErrCode uint32
@@ -95,10 +99,6 @@ const (
 	FlagPadded     Flags = 0x8
 	FlagPriority   Flags = 0x20
 )
-
-func (f Flags) Has(v Flags) bool {
-	return (f & v) == v
-}
 
 type Frame interface {
 	Type() FrameType

@@ -143,10 +143,8 @@ func (s *Settings) SetMaxHeaderListSize(value uint32) error {
 }
 
 func (s Settings) Value(id SettingID) uint32 {
-	for _, x := range s {
-		if x.ID == id {
-			return x.Value
-		}
+	if v, exists := s.value(id); exists {
+		return v
 	}
 	switch id {
 	case SettingHeaderTableSize:
@@ -196,6 +194,15 @@ func (s *Settings) SetValue(id SettingID, value uint32) error {
 		*s = append(*s, setting{id, value})
 	}
 	return nil
+}
+
+func (s Settings) value(id SettingID) (uint32, bool) {
+	for _, x := range s {
+		if x.ID == id {
+			return x.Value, true
+		}
+	}
+	return 0, false
 }
 
 func (s Settings) String() string {
@@ -261,6 +268,8 @@ func (f *WindowUpdateFrame) streamID() uint32 { return f.StreamID }
 func (f *UnknownFrame) streamID() uint32      { return f.StreamID }
 
 func (f *HeadersFrame) HasPriority() bool { return f.Priority != Priority{} }
+
+func (f Flags) Has(v Flags) bool { return (f & v) == v }
 
 func (state StreamState) String() string {
 	switch state {
@@ -412,6 +421,37 @@ func ValidHeaderField(v string) bool {
 		if c >= 127 || ('A' <= c && c <= 'Z') {
 			return false
 		}
+	}
+	return true
+}
+
+func splitHeader(header map[string][]string, key string) (values []string) {
+	for k, v := range header {
+		if strings.EqualFold(key, k) {
+			for _, vv := range v {
+				for _, s := range strings.Split(vv, ",") {
+					values = append(values, strings.TrimSpace(s))
+				}
+			}
+			break
+		}
+	}
+	return
+}
+
+func containsValue(header map[string][]string, key string, values ...string) bool {
+	ss := splitHeader(header, key)
+	if len(ss) == 0 {
+		return false
+	}
+loop:
+	for _, v := range values {
+		for _, s := range ss {
+			if strings.EqualFold(v, s) {
+				continue loop
+			}
+		}
+		return false
 	}
 	return true
 }
