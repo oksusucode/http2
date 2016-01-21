@@ -84,7 +84,7 @@ It is useful for client/server application development using the HTTP/2 connecti
 
     ---
 
-    var pending = map[uint32]*byte.Buffer{}
+    var pending = map[uint32]*bytes.Buffer{}
 
     func readLoop(conn *Conn) {
         for !conn.Closed() {
