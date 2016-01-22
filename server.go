@@ -110,17 +110,40 @@ func (c *Conn) serverUpgrade(upgrade *http.Request, hijacked bool) error {
 		goto fail
 	}
 
+	// The client does so by
+	// making an HTTP/1.1 request that includes an Upgrade header field with
+	// the "h2c" token.
 	if !containsValue(upgrade.Header, "Upgrade", VersionTCP) {
 		goto fail
 	}
 
+	// Since the upgrade is only intended to apply to the immediate
+	// connection, a client sending the HTTP2-Settings header field MUST
+	// also send "HTTP2-Settings" as a connection option in the Connection
+	// header field to prevent it from being forwarded (see Section 6.1 of
+	// [RFC7230]).
 	if !containsValue(upgrade.Header, "Connection", "Upgrade", "HTTP2-Settings") {
 		goto fail
 	}
 
+	// A request that upgrades from HTTP/1.1 to HTTP/2 MUST include exactly
+	// one "HTTP2-Settings" header field.
+	//
+	// A server MUST NOT upgrade the connection to HTTP/2 if this header
+	// field is not present or if more than one is present.  A server MUST
+	// NOT send this header field.
 	if values := splitHeader(upgrade.Header, "HTTP2-Settings"); len(values) != 1 {
 		goto fail
 	} else {
+		// The content of the HTTP2-Settings header field is the payload of a
+		// SETTINGS frame (Section 6.5), encoded as a base64url string (that is,
+		// the URL- and filename-safe Base64 encoding described in Section 5 of
+		// [RFC4648], with any trailing '=' characters omitted).
+		//
+		// A server decodes and interprets these values as it would any other
+		// SETTINGS frame.  Explicit acknowledgement of these settings
+		// (Section 6.5.3) is not necessary, since a 101 response serves as
+		// implicit acknowledgement.
 		payload, err := base64.URLEncoding.DecodeString(values[0])
 		if err != nil {
 			reason = err.Error()
