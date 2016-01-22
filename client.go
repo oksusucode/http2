@@ -28,14 +28,14 @@ func (c *Conn) clientHandshake() error {
 	if tlsConn, ok := c.rwc.(*tls.Conn); ok {
 		if !tlsConn.ConnectionState().HandshakeComplete {
 			if err := tlsConn.Handshake(); err != nil {
-				return err
+				return HandshakeError(err.Error())
 			}
 		}
 
 		state := tlsConn.ConnectionState()
 
 		if !state.NegotiatedProtocolIsMutual || state.NegotiatedProtocol != VersionTLS {
-			return fmt.Errorf("bad protocol %s", state.NegotiatedProtocol)
+			return HandshakeError(fmt.Errorf("bad protocol %s", state.NegotiatedProtocol))
 		}
 	} else {
 		upgradeFunc := c.upgradeFunc
@@ -77,12 +77,12 @@ func (c *Conn) clientHandshake() error {
 func (c *Conn) clientUpgrade(req *http.Request) (err error) {
 	if req == nil {
 		if req, err = http.NewRequest("GET", fmt.Sprintf("http://%s/", c.RemoteAddr().String()), nil); err != nil {
-			return upgradeError(err.Error())
+			return HandshakeError(err.Error())
 		}
 	}
 
 	if req.Method != "GET" {
-		return upgradeError(http.StatusText(http.StatusMethodNotAllowed))
+		return HandshakeError(http.StatusText(http.StatusMethodNotAllowed))
 	}
 
 	// The client does so by
@@ -123,11 +123,11 @@ func (c *Conn) clientUpgrade(req *http.Request) (err error) {
 
 		req.Header["HTTP2-Settings"] = []string{encodedSettings}
 	} else if len(values) > 1 {
-		return upgradeError(http.StatusText(http.StatusBadRequest))
+		return HandshakeError(http.StatusText(http.StatusBadRequest))
 	}
 
 	if err = req.Write(c.rwc); err != nil {
-		return upgradeError(err.Error())
+		return HandshakeError(err.Error())
 	}
 
 	// The HTTP/1.1 request that is sent prior to upgrade is assigned a
@@ -141,7 +141,7 @@ func (c *Conn) clientUpgrade(req *http.Request) (err error) {
 
 	var res *http.Response
 	if res, err = http.ReadResponse(c.buf.Reader, req); err != nil {
-		return upgradeError(err.Error())
+		return HandshakeError(err.Error())
 	}
 
 	if res.StatusCode != http.StatusSwitchingProtocols ||
@@ -157,8 +157,18 @@ func (c *Conn) clientUpgrade(req *http.Request) (err error) {
 		if reason == "" {
 			reason = "upgrade failed"
 		}
-		return upgradeError(reason)
+		return HandshakeError(reason)
 	}
 
 	return
 }
+
+type RoundTripper struct{}
+
+func (RoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
+var (
+	_ http.RoundTripper = (*RoundTripper)(nil)
+)

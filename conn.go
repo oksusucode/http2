@@ -924,14 +924,11 @@ func (r *data) returnBytesLocked() error {
 	return r.err
 }
 
-var (
-	ErrHandshakeTimeout = errors.New("http2: handshake timed out")
-	errBadConnPreface   = errors.New("http2: bad connection preface")
-)
+var errBadConnPreface = errors.New("http2: bad connection preface")
 
-type upgradeError string
+type HandshakeError string
 
-func (e upgradeError) Error() string { return fmt.Sprintf("http2: %s", string(e)) }
+func (e HandshakeError) Error() string { return fmt.Sprintf("http2: %s", string(e)) }
 
 func (c *Conn) Handshake() error {
 	c.handshakeL.Lock()
@@ -958,7 +955,7 @@ func (c *Conn) Handshake() error {
 		select {
 		case <-done:
 		case <-time.After(timeout):
-			c.handshakeErr = ErrHandshakeTimeout
+			c.handshakeErr = HandshakeError("handshake timed out")
 		}
 	} else {
 		if c.server {
@@ -969,11 +966,8 @@ func (c *Conn) Handshake() error {
 	}
 
 	if err := c.handshakeErr; err != nil {
-		if err == ErrHandshakeTimeout {
-			c.close()
-			return err
-		}
-		if _, ok := err.(upgradeError); ok {
+		switch err.(type) {
+		case HandshakeError:
 			c.close()
 			return err
 		}

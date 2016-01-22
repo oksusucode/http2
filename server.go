@@ -27,14 +27,14 @@ func (c *Conn) serverHandshake() error {
 	if tlsConn, ok := c.rwc.(*tls.Conn); ok {
 		if !tlsConn.ConnectionState().HandshakeComplete {
 			if err := tlsConn.Handshake(); err != nil {
-				return err
+				return HandshakeError(err.Error())
 			}
 		}
 
 		state := tlsConn.ConnectionState()
 
 		if state.NegotiatedProtocol != VersionTLS {
-			return fmt.Errorf("bad protocol %s", state.NegotiatedProtocol)
+			return HandshakeError(fmt.Sprintf("bad protocol %s", state.NegotiatedProtocol))
 		}
 
 		// Due to deployment limitations, it might not
@@ -178,7 +178,7 @@ fail:
 		c.buf.WriteString(reason)
 		c.buf.Flush()
 
-		return upgradeError(reason)
+		return HandshakeError(reason)
 	}
 
 	// The HTTP/1.1 request that is sent prior to upgrade is assigned a
