@@ -136,7 +136,6 @@ func (c *conn) serve() {
 		if err != nil {
 			return
 		}
-		var endStream bool
 		switch v := frame.(type) {
 		case *DataFrame:
 			c.rb.Reset()
@@ -147,11 +146,8 @@ func (c *conn) serve() {
 			if err != nil {
 				return
 			}
-			endStream = v.EndStream
-		case *HeadersFrame:
-			endStream = v.EndStream
 		}
-		if endStream && c.ServerConn() {
+		if frame.EndOfStream() && c.ServerConn() {
 			go c.writeBytes(frame.Stream(), int(c.pending[frame.Stream()]))
 		}
 	}
@@ -206,9 +202,6 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 				s = tls.Server(s, sc.TLSConfig)
 			}
 			server = newConn(s, true, sc)
-			if err = server.Handshake(); err != nil {
-				panic(err)
-			}
 			lis.Close()
 			close(done)
 		}()
@@ -228,9 +221,6 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 		c = tls.Client(c, cc.TLSConfig)
 	}
 	client = newConn(c, false, cc)
-	if err = client.Handshake(); err != nil {
-		panic(err)
-	}
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
