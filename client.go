@@ -35,7 +35,7 @@ func (c *Conn) clientHandshake() error {
 		state := tlsConn.ConnectionState()
 
 		if !state.NegotiatedProtocolIsMutual || state.NegotiatedProtocol != VersionTLS {
-			return HandshakeError(fmt.Errorf("bad protocol %s", state.NegotiatedProtocol))
+			return HandshakeError(fmt.Sprintf("bad protocol %s", state.NegotiatedProtocol))
 		}
 	} else {
 		upgradeFunc := c.upgradeFunc
