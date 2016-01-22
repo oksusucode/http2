@@ -136,8 +136,9 @@ func (c *conn) serve() {
 		if err != nil {
 			return
 		}
-		switch v := frame.(type) {
-		case *DataFrame:
+		switch frame.Type() {
+		case FrameData:
+			v := frame.(*DataFrame)
 			c.rb.Reset()
 			var n int64
 			n, err = c.rb.ReadFrom(v.Data)
