@@ -345,15 +345,15 @@ func (c *Conn) WriteFrame(frame Frame) error {
 func (c *Conn) writeFrame(frame Frame) (err error) {
 	switch frame.Type() {
 	case FrameData:
-		stream := c.stream(frame.streamID())
+		stream := c.stream(frame.Stream())
 		if stream == nil {
-			return fmt.Errorf("stream %d does not exist", frame.streamID())
+			return fmt.Errorf("stream %d does not exist", frame.Stream())
 		}
 		if _, err = stream.transition(false, FrameData, false); err == nil {
 			return c.flowControlWriter.Write(stream, frame)
 		}
 	case FrameHeaders:
-		stream := c.stream(frame.streamID())
+		stream := c.stream(frame.Stream())
 		if stream == nil {
 			defer func() {
 				if atomic.CompareAndSwapInt32(&c.idState, 1, 0) {
@@ -361,7 +361,7 @@ func (c *Conn) writeFrame(frame Frame) (err error) {
 				}
 			}()
 
-			if stream, err = c.idleStream(frame.streamID()); err != nil {
+			if stream, err = c.idleStream(frame.Stream()); err != nil {
 				break
 			}
 		}
@@ -371,7 +371,7 @@ func (c *Conn) writeFrame(frame Frame) (err error) {
 	case FramePriority:
 		//
 	case FrameRSTStream:
-		stream := c.stream(frame.streamID())
+		stream := c.stream(frame.Stream())
 		if stream == nil {
 			return
 		}
@@ -399,13 +399,13 @@ func (c *Conn) writeFrame(frame Frame) (err error) {
 			err = ConnError{errors.New("sending PUSH_PROMISE after GO_AWAY received"), ErrCodeProtocol}
 			break
 		}
-		stream := c.stream(frame.streamID())
+		stream := c.stream(frame.Stream())
 		if stream == nil {
-			err = ConnError{fmt.Errorf("stream %d does not exist", frame.streamID()), ErrCodeProtocol}
+			err = ConnError{fmt.Errorf("stream %d does not exist", frame.Stream()), ErrCodeProtocol}
 			break
 		}
 		if !stream.writable() {
-			err = ConnError{fmt.Errorf("stream %d is not active", frame.streamID()), ErrCodeProtocol}
+			err = ConnError{fmt.Errorf("stream %d is not active", frame.Stream()), ErrCodeProtocol}
 			break
 		}
 		if !c.RemoteSettings().PushEnabled() {
@@ -463,9 +463,9 @@ func (c *Conn) writeFrame(frame Frame) (err error) {
 
 		c.writeQueue.add(frame, true)
 	case FrameWindowUpdate:
-		if frame.streamID() == 0 {
+		if frame.Stream() == 0 {
 			err = c.connStream.recvFlow.incrementWindow(int(frame.(*WindowUpdateFrame).WindowSizeIncrement))
-		} else if stream := c.stream(frame.streamID()); stream != nil {
+		} else if stream := c.stream(frame.Stream()); stream != nil {
 			err = stream.recvFlow.incrementWindow(int(frame.(*WindowUpdateFrame).WindowSizeIncrement))
 		}
 	default:
@@ -713,7 +713,7 @@ again:
 	// streams initiated by the receiver with identifiers higher than the
 	// identified last stream.
 	if goAway, sent := c.remote.goAway.Load().(*GoAwayFrame); sent {
-		if c.remote.validStreamID(frame.streamID()) && frame.streamID() > goAway.LastStreamID {
+		if c.remote.validStreamID(frame.Stream()) && frame.Stream() > goAway.LastStreamID {
 			// Flow-controlled frames (i.e., DATA) MUST be counted toward the
 			// connection flow-control window.
 			if dataFrame, ok := frame.(*DataFrame); ok {
@@ -817,7 +817,7 @@ again:
 			c.writeQueue.add(&SettingsFrame{true, v.Settings}, true)
 		}
 	case *PushPromiseFrame:
-		stream := c.stream(frame.streamID())
+		stream := c.stream(frame.Stream())
 		if stream == nil {
 			err = ConnError{fmt.Errorf("stream %d does not exist", v.StreamID), ErrCodeProtocol}
 			break

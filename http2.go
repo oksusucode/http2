@@ -102,7 +102,8 @@ const (
 
 type Frame interface {
 	Type() FrameType
-	streamID() uint32
+	Stream() uint32
+	EndOfStream() bool
 }
 
 type DataFrame struct {

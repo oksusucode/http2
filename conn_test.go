@@ -152,7 +152,7 @@ func (c *conn) serve() {
 			endStream = v.EndStream
 		}
 		if endStream && c.ServerConn() {
-			go c.writeBytes(frame.streamID(), int(c.pending[frame.streamID()]))
+			go c.writeBytes(frame.Stream(), int(c.pending[frame.Stream()]))
 		}
 	}
 }

@@ -256,16 +256,27 @@ func (f *GoAwayFrame) Type() FrameType       { return FrameGoAway }
 func (f *WindowUpdateFrame) Type() FrameType { return FrameWindowUpdate }
 func (f *UnknownFrame) Type() FrameType      { return f.FrameType }
 
-func (f *DataFrame) streamID() uint32         { return f.StreamID }
-func (f *HeadersFrame) streamID() uint32      { return f.StreamID }
-func (f *PriorityFrame) streamID() uint32     { return f.StreamID }
-func (f *RSTStreamFrame) streamID() uint32    { return f.StreamID }
-func (f *SettingsFrame) streamID() uint32     { return 0 }
-func (f *PushPromiseFrame) streamID() uint32  { return f.StreamID }
-func (f *PingFrame) streamID() uint32         { return 0 }
-func (f *GoAwayFrame) streamID() uint32       { return 0 }
-func (f *WindowUpdateFrame) streamID() uint32 { return f.StreamID }
-func (f *UnknownFrame) streamID() uint32      { return f.StreamID }
+func (f *DataFrame) Stream() uint32         { return f.StreamID }
+func (f *HeadersFrame) Stream() uint32      { return f.StreamID }
+func (f *PriorityFrame) Stream() uint32     { return f.StreamID }
+func (f *RSTStreamFrame) Stream() uint32    { return f.StreamID }
+func (f *SettingsFrame) Stream() uint32     { return 0 }
+func (f *PushPromiseFrame) Stream() uint32  { return f.StreamID }
+func (f *PingFrame) Stream() uint32         { return 0 }
+func (f *GoAwayFrame) Stream() uint32       { return 0 }
+func (f *WindowUpdateFrame) Stream() uint32 { return f.StreamID }
+func (f *UnknownFrame) Stream() uint32      { return f.StreamID }
+
+func (f *DataFrame) EndOfStream() bool         { return f.EndStream }
+func (f *HeadersFrame) EndOfStream() bool      { return f.EndStream }
+func (f *PriorityFrame) EndOfStream() bool     { return false }
+func (f *RSTStreamFrame) EndOfStream() bool    { return false }
+func (f *SettingsFrame) EndOfStream() bool     { return false }
+func (f *PushPromiseFrame) EndOfStream() bool  { return false }
+func (f *PingFrame) EndOfStream() bool         { return false }
+func (f *GoAwayFrame) EndOfStream() bool       { return false }
+func (f *WindowUpdateFrame) EndOfStream() bool { return false }
+func (f *UnknownFrame) EndOfStream() bool      { return false }
 
 func (f *HeadersFrame) HasPriority() bool { return f.Priority != Priority{} }
 
