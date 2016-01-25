@@ -10,7 +10,7 @@ It is useful for client/server application development using the HTTP/2 connecti
 - [x] Server/Client Connection
 - [x] Negotiation (ALPN, Upgrade)
 - [x] Flow Control
-- [x] Multiplexing without blocking
+- [x] Multiplexing without head-of-line blocking
 - [x] Graceful Shutdown
 
 ## Benchmarks
