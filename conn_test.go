@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-func BenchmarkConnReadWriteN(b *testing.B) {
-	benchmarkConnReadWrite(b, false, 0, 1)
-}
-
 func BenchmarkConnReadWriteTCP_1K_C1(b *testing.B) {
 	benchmarkConnReadWrite(b, false, 1024, 1)
 }
