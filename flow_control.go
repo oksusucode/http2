@@ -2,7 +2,6 @@ package http2
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 )
 
@@ -313,139 +312,7 @@ func (c *remoteFlowController) cancel() {
 	}
 }
 
-type flowControlWriter interface {
-	Write(*stream, Frame) error
-	Flush() error
-	Close() error
-	Cancel(*stream) error
-}
-
-type streamWriter struct {
-	// pending,
-	// written int64
-}
-
-func (w *streamWriter) Write(stream *stream, frame Frame) error {
-	select {
-	case <-stream.conn.closeCh:
-		return ErrClosed
-	case <-stream.closeCh:
-		return errors.New("stream closed")
-	case <-stream.wio:
-		defer func() { stream.wio <- struct{}{} }()
-
-		if frame.Type() == FrameHeaders {
-			headers := frame.(*HeadersFrame)
-			stream.conn.writeQueue.add(&flowControlled{stream, headers, headers.EndStream}, false)
-			select {
-			case err := <-stream.werr:
-				return err
-				// case <-stream.conn.closeCh:
-				// 	return ErrClosed
-				// case <-stream.closeCh:
-				// 	return errors.New("stream closed x")
-			}
-		}
-
-		data, ok := frame.(*DataFrame)
-		if !ok {
-			return fmt.Errorf("bad flow control frame type %s", frame.Type())
-		}
-		dataLen := data.DataLen
-		padLen := int(data.PadLen)
-		allowed, err := w.allocateBytes(stream, dataLen+padLen)
-		if err != nil {
-			return err
-		}
-		if allowed == dataLen+padLen {
-			stream.conn.writeQueue.add(&flowControlled{stream, data, data.EndStream}, false)
-			select {
-			case err = <-stream.werr:
-				return err
-				// case <-stream.conn.closeCh:
-				// 	return ErrClosed
-				// case <-stream.closeCh:
-				// 	return errors.New("stream closed x")
-			}
-		}
-
-		cdata := &flowControlled{s: stream}
-		chunk := new(DataFrame)
-
-		*chunk = *data
-
-		var lastFrame bool
-
-	again:
-		chunk.DataLen = dataLen
-		if chunk.DataLen > allowed {
-			chunk.DataLen = allowed
-		}
-		padding := allowed - chunk.DataLen
-		if padding > padLen {
-			padding = padLen
-		}
-
-		dataLen -= chunk.DataLen
-		padLen -= padding
-		lastFrame = dataLen+padLen == 0
-
-		chunk.PadLen = uint8(padding)
-		chunk.EndStream = data.EndStream && lastFrame
-
-		cdata.frameWriterTo = chunk
-		cdata.endStream = chunk.EndStream
-		stream.conn.writeQueue.add(cdata, false)
-		select {
-		case err = <-stream.werr:
-			if lastFrame || err != nil {
-				return err
-			}
-			allowed, err = w.allocateBytes(stream, dataLen+padLen)
-			if err != nil {
-				return err
-			}
-			goto again
-			// case <-stream.conn.closeCh:
-			// 	return ErrClosed
-			// case <-stream.closeCh:
-			// 	return errors.New("stream closed x")
-		}
-	}
-}
-
-type flowControlled struct {
-	s *stream
-	frameWriterTo
-	endStream bool
-}
-
-func (f *flowControlled) writeTo(w *frameWriter) error {
-	err := f.frameWriterTo.writeTo(w)
-	f.s.werr <- err
-	if f.endStream && err == nil {
-		_, err = f.s.transition(false, f.Type(), true)
-	}
-	return err
-}
-
-func (streamWriter) Flush() error {
-	return nil
-}
-
-func (streamWriter) Close() error {
-	return nil
-}
-
-func (w *streamWriter) Cancel(stream *stream) error {
-	select {
-	case stream.werr <- errors.New("stream canceled"):
-	default:
-	}
-	return nil
-}
-
-func (w *streamWriter) allocateBytes(stream *stream, n int) (int, error) {
+func allocateBytes(stream *stream, n int) (int, error) {
 	if n <= 0 {
 		return 0, nil
 	}
@@ -457,7 +324,7 @@ func (w *streamWriter) allocateBytes(stream *stream, n int) (int, error) {
 	var sw int
 	select {
 	case <-stream.closeCh:
-		return 0, errors.New("stream closed xxx")
+		return 0, errStreamClosed
 	case <-stream.conn.closeCh:
 		return 0, ErrClosed
 	case sw = <-s.windowCh():
@@ -469,7 +336,7 @@ func (w *streamWriter) allocateBytes(stream *stream, n int) (int, error) {
 	select {
 	case <-stream.closeCh:
 		c.cancel()
-		return 0, errors.New("stream closed xxx")
+		return 0, errStreamClosed
 	case <-stream.conn.closeCh:
 		return 0, ErrClosed
 	case cw = <-c.windowCh():
@@ -491,25 +358,3 @@ func (w *streamWriter) allocateBytes(stream *stream, n int) (int, error) {
 
 	return n, nil
 }
-
-type flowControlQueue struct {
-}
-
-func (flowControlQueue) Write(*stream, Frame) error {
-	return nil
-}
-
-func (flowControlQueue) Flush() error {
-	return nil
-}
-
-func (flowControlQueue) Close() error {
-	return nil
-}
-
-func (flowControlQueue) Cancel(*stream) error {
-	return nil
-}
-
-var _ flowControlWriter = (*streamWriter)(nil)
-var _ flowControlWriter = (*flowControlQueue)(nil)

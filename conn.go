@@ -27,11 +27,10 @@ type Conn struct {
 	rio         sync.Mutex
 	frameReader *frameReader
 	lastData    *data
+	data        data
 
 	frameWriter *frameWriter
 	writeQueue  *writeQueue
-
-	flowControlWriter flowControlWriter
 
 	connStream *stream
 
@@ -89,7 +88,6 @@ func newConn(rwc io.ReadWriteCloser, server bool, config *Config) *Conn {
 	conn.frameReader = newFrameReader(conn.buf.Reader, readBufSize)
 	conn.frameWriter = newFrameWriter(conn.buf.Writer)
 	conn.writeQueue = &writeQueue{ch: make(chan Frame, 1)}
-	conn.flowControlWriter = &streamWriter{}
 	conn.connStream = &stream{conn: conn, id: 0, weight: defaultWeight}
 	w := int(defaultInitialWindowSize)
 	conn.connStream.recvFlow = &flowController{s: conn.connStream, win: w, winUpperBound: w, processedWin: w}
@@ -350,7 +348,7 @@ func (c *Conn) writeFrame(frame Frame) (err error) {
 			return fmt.Errorf("stream %d does not exist", frame.Stream())
 		}
 		if _, err = stream.transition(false, FrameData, false); err == nil {
-			return c.flowControlWriter.Write(stream, frame)
+			return stream.write(frame)
 		}
 	case FrameHeaders:
 		stream := c.stream(frame.Stream())
@@ -366,7 +364,7 @@ func (c *Conn) writeFrame(frame Frame) (err error) {
 			}
 		}
 		if _, err = stream.transition(false, FrameHeaders, false); err == nil {
-			return c.flowControlWriter.Write(stream, frame)
+			return stream.write(frame)
 		}
 	case FramePriority:
 		//
@@ -480,9 +478,8 @@ func (c *Conn) writeFrame(frame Frame) (err error) {
 }
 
 func (c *Conn) Flush() error {
-	err := c.flowControlWriter.Flush()
 	c.writeQueue.add(nil, false)
-	return err
+	return nil
 }
 
 func (c *Conn) Closed() bool {
@@ -503,7 +500,7 @@ func (c *Conn) CloseTimeout(timeout time.Duration) error {
 		// providing that circumstances permit it.
 		c.writeFrame(&GoAwayFrame{LastStreamID: c.LastStreamID(), ErrCode: ErrCodeNo})
 
-		c.flowControlWriter.Flush()
+		c.Flush()
 
 		if timeout <= 0 {
 			return c.close()
@@ -771,7 +768,13 @@ again:
 			}
 			break
 		}
-		c.lastData = &data{stream: stream, src: v.Data, endStream: v.EndStream}
+		c.data.stream = stream
+		c.data.src = v.Data
+		c.data.endStream = v.EndStream
+		c.data.processed = 0
+		c.data.sawEOF = false
+		c.data.err = nil
+		c.lastData = &c.data
 		v.Data = c.lastData
 	case *HeadersFrame:
 		stream := c.stream(v.StreamID)

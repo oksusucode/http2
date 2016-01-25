@@ -1,6 +1,7 @@
 package http2
 
 import (
+	"errors"
 	"fmt"
 	"sync/atomic"
 )
@@ -31,6 +32,10 @@ type stream struct {
 
 	recvFlow *flowController
 	sendFlow *remoteFlowController
+
+	Frame
+	lastWritten FrameType
+	sawEOS      bool
 
 	resetSent,
 	resetReceived bool
@@ -65,6 +70,105 @@ func (s *stream) writable() bool {
 	default:
 		return false
 	}
+}
+
+var errStreamClosed = errors.New("stream closed")
+
+func (s *stream) write(frame Frame) error {
+	select {
+	case <-s.conn.closeCh:
+		return ErrClosed
+	case <-s.closeCh:
+		return errStreamClosed
+	case <-s.wio:
+		defer func() { s.wio <- struct{}{} }()
+
+		if s.sawEOS {
+			return errStreamClosed
+		}
+
+		if frame.Type() == FrameHeaders {
+			s.Frame = frame
+			s.conn.writeQueue.add(s, false)
+			return <-s.werr
+		}
+
+		data, ok := frame.(*DataFrame)
+		if !ok {
+			return fmt.Errorf("bad flow control frame type %s", frame.Type())
+		}
+
+		dataLen := data.DataLen
+		padLen := int(data.PadLen)
+		allowed, err := allocateBytes(s, dataLen+padLen)
+		if err != nil {
+			return err
+		}
+
+		if allowed == dataLen+padLen {
+			s.Frame = frame
+			s.conn.writeQueue.add(s, false)
+			return <-s.werr
+		}
+
+		chunk := new(DataFrame)
+		*chunk = *data
+		s.Frame = chunk
+
+		lastFrame := false
+		padding := 0
+
+	again:
+		chunk.DataLen = dataLen
+		if chunk.DataLen > allowed {
+			chunk.DataLen = allowed
+		}
+
+		padding = allowed - chunk.DataLen
+		if padding > padLen {
+			padding = padLen
+		}
+
+		dataLen -= chunk.DataLen
+		padLen -= padding
+		lastFrame = dataLen+padLen == 0
+
+		chunk.PadLen = uint8(padding)
+		chunk.EndStream = data.EndStream && lastFrame
+
+		s.conn.writeQueue.add(s, false)
+		err = <-s.werr
+
+		if lastFrame || err != nil {
+			return err
+		}
+
+		allowed, err = allocateBytes(s, dataLen+padLen)
+		if err != nil {
+			return err
+		}
+
+		goto again
+	}
+}
+
+func (s *stream) writeTo(w *frameWriter) error {
+	err := s.Frame.(frameWriterTo).writeTo(w)
+	s.lastWritten = s.Frame.Type()
+	s.sawEOS = s.Frame.EndOfStream()
+	s.werr <- err
+	if s.sawEOS && err == nil {
+		_, err = s.transition(false, s.lastWritten, true)
+	}
+	return err
+}
+
+func (s *stream) cancel(err error) error {
+	select {
+	case s.werr <- err:
+	default:
+	}
+	return nil
 }
 
 func (s *stream) close() {
@@ -114,7 +218,7 @@ func (s *stream) compareAndSwapState(from, to StreamState) bool {
 				}
 			case StateOpen:
 				if to == StateHalfClosedLocal {
-					s.conn.flowControlWriter.Cancel(s)
+					s.cancel(errStreamClosed)
 					s.sendFlow.cancel()
 					s.sendFlow.incrementWindow(-s.sendFlow.window())
 				}
@@ -132,7 +236,7 @@ func (s *stream) compareAndSwapState(from, to StreamState) bool {
 			if from != StateClosed {
 				close(s.closeCh)
 
-				s.conn.flowControlWriter.Cancel(s)
+				s.cancel(errStreamClosed)
 				if s.sendFlow != nil {
 					s.sendFlow.cancel()
 					s.sendFlow.incrementWindow(-s.sendFlow.window())
