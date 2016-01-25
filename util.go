@@ -276,7 +276,7 @@ func (f *PushPromiseFrame) EndOfStream() bool  { return false }
 func (f *PingFrame) EndOfStream() bool         { return false }
 func (f *GoAwayFrame) EndOfStream() bool       { return false }
 func (f *WindowUpdateFrame) EndOfStream() bool { return false }
-func (f *UnknownFrame) EndOfStream() bool      { return false }
+func (f *UnknownFrame) EndOfStream() bool      { return f.Flags.Has(FlagEndStream) }
 
 func (f *HeadersFrame) HasPriority() bool { return f.Priority != Priority{} }
 
