@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+func BenchmarkConnReadWriteN(b *testing.B) {
+	benchmarkConnReadWrite(b, false, 0, 1)
+}
+
 func BenchmarkConnReadWriteTCP_1K_C1(b *testing.B) {
 	benchmarkConnReadWrite(b, false, 1024, 1)
 }
@@ -27,22 +31,6 @@ func BenchmarkConnReadWriteTCP_1K_C512(b *testing.B) {
 	benchmarkConnReadWrite(b, false, 1024, 512)
 }
 
-func BenchmarkConnReadWriteTCP_1M_C1(b *testing.B) {
-	benchmarkConnReadWrite(b, false, 1024*1024, 1)
-}
-
-func BenchmarkConnReadWriteTCP_1M_C8(b *testing.B) {
-	benchmarkConnReadWrite(b, false, 1024*1024, 8)
-}
-
-func BenchmarkConnReadWriteTCP_1M_C64(b *testing.B) {
-	benchmarkConnReadWrite(b, false, 1024*1024, 64)
-}
-
-func BenchmarkConnReadWriteTCP_1M_C512(b *testing.B) {
-	benchmarkConnReadWrite(b, false, 1024*1024, 512)
-}
-
 func BenchmarkConnReadWriteTLS_1K_C1(b *testing.B) {
 	benchmarkConnReadWrite(b, true, 1024, 1)
 }
@@ -57,22 +45,6 @@ func BenchmarkConnReadWriteTLS_1K_C64(b *testing.B) {
 
 func BenchmarkConnReadWriteTLS_1K_C512(b *testing.B) {
 	benchmarkConnReadWrite(b, true, 1024, 512)
-}
-
-func BenchmarkConnReadWriteTLS_1M_C1(b *testing.B) {
-	benchmarkConnReadWrite(b, true, 1024*1024, 1)
-}
-
-func BenchmarkConnReadWriteTLS_1M_C8(b *testing.B) {
-	benchmarkConnReadWrite(b, true, 1024*1024, 8)
-}
-
-func BenchmarkConnReadWriteTLS_1M_C64(b *testing.B) {
-	benchmarkConnReadWrite(b, true, 1024*1024, 64)
-}
-
-func BenchmarkConnReadWriteTLS_1M_C512(b *testing.B) {
-	benchmarkConnReadWrite(b, true, 1024*1024, 512)
 }
 
 func benchmarkConnReadWrite(b *testing.B, overTLS bool, n, c int) {
@@ -138,12 +110,11 @@ func (c *conn) serve() {
 		}
 		switch frame.Type() {
 		case FrameData:
-			v := frame.(*DataFrame)
 			c.rb.Reset()
 			var n int64
-			n, err = c.rb.ReadFrom(v.Data)
+			n, err = c.rb.ReadFrom(frame.(*DataFrame).Data)
 			c.rx += n
-			c.pending[v.StreamID] += n
+			c.pending[frame.Stream()] += n
 			if err != nil {
 				return
 			}
@@ -202,7 +173,7 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 				}
 				s = tls.Server(s, sc.TLSConfig)
 			}
-			server = newConn(s, true, sc)
+			server = ServerConn(s, sc)
 			lis.Close()
 			close(done)
 		}()
@@ -221,7 +192,7 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 		}
 		c = tls.Client(c, cc.TLSConfig)
 	}
-	client = newConn(c, false, cc)
+	client = ClientConn(c, cc, nil)
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
