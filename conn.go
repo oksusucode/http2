@@ -2,7 +2,6 @@ package http2
 
 import (
 	"bufio"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -52,7 +51,6 @@ type Conn struct {
 }
 
 type Config struct {
-	TLSConfig          *tls.Config
 	InitialSettings    Settings
 	HandshakeTimeout   time.Duration
 	AllowLowTLSVersion bool

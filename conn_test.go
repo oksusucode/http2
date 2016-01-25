@@ -139,8 +139,6 @@ func (c *conn) writeBytes(streamID uint32, n int) (err error) {
 func pipe(overTLS bool) (server *Conn, client *Conn) {
 	done := make(chan struct{})
 	addr := &net.TCPAddr{Port: 8989}
-	sc := &Config{}
-	cc := &Config{}
 	for {
 		lis, err := net.Listen("tcp", addr.String())
 		if err != nil {
@@ -161,15 +159,14 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 				if err != nil {
 					panic(err)
 				}
-				sc.TLSConfig = &tls.Config{
+				s = tls.Server(s, &tls.Config{
 					Certificates:             []tls.Certificate{cert},
 					Rand:                     rand.Reader,
 					NextProtos:               []string{VersionTLS},
 					PreferServerCipherSuites: true,
-				}
-				s = tls.Server(s, sc.TLSConfig)
+				})
 			}
-			server = ServerConn(s, sc)
+			server = ServerConn(s, nil)
 			lis.Close()
 			close(done)
 		}()
@@ -181,14 +178,13 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 	}
 	c.(*net.TCPConn).SetNoDelay(true)
 	if overTLS {
-		cc.TLSConfig = &tls.Config{
+		c = tls.Client(c, &tls.Config{
 			Rand:               rand.Reader,
 			NextProtos:         []string{VersionTLS},
 			InsecureSkipVerify: true,
-		}
-		c = tls.Client(c, cc.TLSConfig)
+		})
 	}
-	client = ClientConn(c, cc, nil)
+	client = ClientConn(c, nil, nil)
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
