@@ -15,8 +15,6 @@ It is useful for client/server application development using the HTTP/2 connecti
 
 ## Benchmarks
 
-env:
-
 - 2.2 GHz Intel Core i7
 - 16 GB 1600 MHz DDR3
 - Concurrency: C(1|8|64|512)
