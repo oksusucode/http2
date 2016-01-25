@@ -19,11 +19,13 @@ type frameReader struct {
 	maxHeaderListSize uint32
 	pendingHeaders    frameReaderFrom
 
-	payloadLen  uint32
-	frameType   FrameType
-	flags       Flags
-	streamID    uint32
+	payloadLen uint32
+	frameType  FrameType
+	flags      Flags
+	streamID   uint32
+
 	lastPayload io.ReadCloser
+	payload     framePayload
 }
 
 func newFrameReader(r io.Reader, bufSize int) *frameReader {
@@ -202,7 +204,11 @@ func (f *DataFrame) readFrom(r *frameReader) error {
 
 	f.StreamID = r.streamID
 	f.EndStream = r.flags.Has(FlagEndStream)
-	r.lastPayload = &framePayload{r, f.DataLen, f.PadLen}
+
+	r.payload.r = r
+	r.payload.n = f.DataLen
+	r.payload.p = f.PadLen
+	r.lastPayload = &r.payload
 	f.Data = r.lastPayload
 
 	return nil
