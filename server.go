@@ -14,9 +14,84 @@ import (
 type Handler func(*Conn)
 
 type Server struct {
-	Addr    string
-	Handler Handler
-	Config  *Config
+	Addr      string
+	Handler   Handler
+	Config    *Config
+	TLSConfig *tls.Config
+}
+
+func (s *Server) Serve(l net.Listener) error {
+	defer l.Close()
+
+	for {
+		rwc, err := l.Accept()
+		if err != nil {
+			return err
+		}
+		conn := ServerConn(rwc, s.Config)
+		go s.Handler(conn)
+	}
+}
+
+func (s *Server) ListenAndServe() error {
+	if s.Handler == nil {
+		return errors.New("Handler must be non-nil")
+	}
+
+	addr := s.Addr
+	if addr == "" {
+		addr = ":http"
+	}
+
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(tcpNoDelayListener{l.(*net.TCPListener)})
+}
+
+func (s *Server) ListenAndServeTLS(certFile, keyFile string) error {
+	if s.Handler == nil {
+		return errors.New("Handler must be non-nil")
+	}
+
+	addr := s.Addr
+	if addr == "" {
+		addr = ":https"
+	}
+
+	config := cloneTLSConfig(s.TLSConfig)
+	if err := initTLSConfig(&config); err != nil {
+		return err
+	}
+
+	if len(config.Certificates) == 0 || certFile != "" || keyFile != "" {
+		var err error
+		config.Certificates = make([]tls.Certificate, 1)
+		config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return err
+		}
+	}
+
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(tls.NewListener(tcpNoDelayListener{l.(*net.TCPListener)}, config))
+}
+
+type tcpNoDelayListener struct {
+	*net.TCPListener
+}
+
+func (l tcpNoDelayListener) Accept() (net.Conn, error) {
+	c, err := l.AcceptTCP()
+	if err != nil {
+		return nil, err
+	}
+	c.SetNoDelay(true)
+	return c, nil
 }
 
 func ServerConn(rawConn net.Conn, config *Config) *Conn {
@@ -208,6 +283,69 @@ fail:
 	c.buf.Flush()
 
 	return nil
+}
+
+func initTLSConfig(cfg **tls.Config) error {
+	config := *cfg
+	if config == nil {
+		config = new(tls.Config)
+	}
+	if config.CipherSuites != nil {
+		const requiredCipher = tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+		var a, b []uint16
+		a = append(a, requiredCipher)
+		for _, suite := range config.CipherSuites {
+			if suite == requiredCipher {
+				continue
+			}
+			if badCipher(suite) {
+				b = append(b, suite)
+			} else {
+				a = append(a, suite)
+			}
+		}
+		config.CipherSuites = append(a, b...)
+	}
+	config.PreferServerCipherSuites = true
+	haveNPN := false
+	for _, p := range config.NextProtos {
+		if p == VersionTLS {
+			haveNPN = true
+			break
+		}
+	}
+	if !haveNPN {
+		config.NextProtos = append(config.NextProtos, VersionTLS)
+	}
+	*cfg = config
+	return nil
+}
+
+func cloneTLSConfig(cfg *tls.Config) *tls.Config {
+	if cfg == nil {
+		return &tls.Config{}
+	}
+	return &tls.Config{
+		Rand:                     cfg.Rand,
+		Time:                     cfg.Time,
+		Certificates:             cfg.Certificates,
+		NameToCertificate:        cfg.NameToCertificate,
+		GetCertificate:           cfg.GetCertificate,
+		RootCAs:                  cfg.RootCAs,
+		NextProtos:               cfg.NextProtos,
+		ServerName:               cfg.ServerName,
+		ClientAuth:               cfg.ClientAuth,
+		ClientCAs:                cfg.ClientCAs,
+		InsecureSkipVerify:       cfg.InsecureSkipVerify,
+		CipherSuites:             cfg.CipherSuites,
+		PreferServerCipherSuites: cfg.PreferServerCipherSuites,
+		SessionTicketsDisabled:   cfg.SessionTicketsDisabled,
+		SessionTicketKey:         cfg.SessionTicketKey,
+		ClientSessionCache:       cfg.ClientSessionCache,
+		MinVersion:               cfg.MinVersion,
+		MaxVersion:               cfg.MaxVersion,
+		CurvePreferences:         cfg.CurvePreferences,
+	}
 }
 
 func badCipher(cipher uint16) bool {
