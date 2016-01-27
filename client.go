@@ -82,7 +82,7 @@ func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, e
 			if err != nil {
 				return nil, err
 			}
-			conn := ClientConn(c, d.Config, request)
+			conn := ClientConn(c, d.Config, nil)
 			return conn, conn.Handshake()
 		}
 
@@ -119,7 +119,7 @@ func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, e
 			return nil, err
 		}
 		tc := tls.Client(c, config)
-		conn := ClientConn(tc, d.Config, request)
+		conn := ClientConn(tc, d.Config, nil)
 		if err = conn.Handshake(); err == nil && !config.InsecureSkipVerify {
 			err = tc.VerifyHostname(config.ServerName)
 		}
