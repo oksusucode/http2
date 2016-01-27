@@ -3,8 +3,8 @@ package http2
 import "io"
 
 const (
-	VersionTLS    = "h2"
-	VersionTCP    = "h2c"
+	ProtocolTLS   = "h2"
+	ProtocolTCP   = "h2c"
 	ClientPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 )
 

@@ -11,15 +11,20 @@ import (
 	"net/http"
 )
 
+// A Handler for reading or writing frames from the connection.
 type Handler func(*Conn)
 
+// A Server defines parameters for running an HTTP/2 server.
 type Server struct {
-	Addr      string
-	Handler   Handler
-	Config    *Config
-	TLSConfig *tls.Config
+	Addr      string      // TCP address to listen on, ":http" if empty
+	Handler   Handler     // handler to invoke, cannot be nil
+	Config    *Config     // optional connection config, used by ServerConn
+	TLSConfig *tls.Config // optional TLS config, used by ListenAndServeTLS
 }
 
+// Serve accepts incoming connections on the Listener l, creating a
+// new service goroutine for each.
+// Serve always returns a non-nil error.
 func (s *Server) Serve(l net.Listener) error {
 	defer l.Close()
 
@@ -33,6 +38,11 @@ func (s *Server) Serve(l net.Listener) error {
 	}
 }
 
+// ListenAndServe listens on the TCP network address s.Addr and then
+// calls Serve to handle requests on incoming connections.
+// Accepted connections are configured to enable TCP no-delay.
+// If s.Addr is blank, ":http" is used.
+// ListenAndServe always returns a non-nil error.
 func (s *Server) ListenAndServe() error {
 	if s.Handler == nil {
 		return errors.New("Handler must be non-nil")
@@ -50,6 +60,19 @@ func (s *Server) ListenAndServe() error {
 	return s.Serve(tcpNoDelayListener{l.(*net.TCPListener)})
 }
 
+// ListenAndServeTLS listens on the TCP network address s.Addr and
+// then calls Serve to handle requests on incoming TLS connections.
+// Accepted connections are configured to enable TCP no-delay.
+//
+// Filenames containing a certificate and matching private key for the
+// server must be provided if the Server's TLSConfig.Certificates is
+// not populated. If the certificate is signed by a certificate
+// authority, the certFile should be the concatenation of the server's
+// certificate, any intermediates, and the CA's certificate.
+//
+// If s.Addr is blank, ":https" is used.
+//
+// ListenAndServeTLS always returns a non-nil error.
 func (s *Server) ListenAndServeTLS(certFile, keyFile string) error {
 	if s.Handler == nil {
 		return errors.New("Handler must be non-nil")
@@ -94,6 +117,9 @@ func (l tcpNoDelayListener) Accept() (net.Conn, error) {
 	return c, nil
 }
 
+// ServerConn returns a new HTTP/2 server side connection
+// using rawConn as the underlying transport.
+// If config is nil, the default configuration is used.
 func ServerConn(rawConn net.Conn, config *Config) *Conn {
 	return newConn(rawConn, true, config)
 }
@@ -108,7 +134,7 @@ func (c *Conn) serverHandshake() error {
 
 		state := tlsConn.ConnectionState()
 
-		if state.NegotiatedProtocol != VersionTLS {
+		if state.NegotiatedProtocol != ProtocolTLS {
 			return HandshakeError(fmt.Sprintf("bad protocol %s", state.NegotiatedProtocol))
 		}
 
@@ -188,7 +214,7 @@ func (c *Conn) serverUpgrade(upgrade *http.Request, hijacked bool) error {
 	// The client does so by
 	// making an HTTP/1.1 request that includes an Upgrade header field with
 	// the "h2c" token.
-	if !containsValue(upgrade.Header, "Upgrade", VersionTCP) {
+	if !containsValue(upgrade.Header, "Upgrade", ProtocolTLS) {
 		goto fail
 	}
 
@@ -309,13 +335,13 @@ func initTLSConfig(cfg **tls.Config) error {
 	config.PreferServerCipherSuites = true
 	haveNPN := false
 	for _, p := range config.NextProtos {
-		if p == VersionTLS {
+		if p == ProtocolTLS {
 			haveNPN = true
 			break
 		}
 	}
 	if !haveNPN {
-		config.NextProtos = append(config.NextProtos, VersionTLS)
+		config.NextProtos = append(config.NextProtos, ProtocolTLS)
 	}
 	*cfg = config
 	return nil

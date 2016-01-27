@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+func Test(t *testing.T) {
+}
+
 func BenchmarkConnReadWriteTCP_1K_C1(b *testing.B) {
 	benchmarkConnReadWrite(b, false, 1024, 1)
 }
@@ -162,7 +165,7 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 				s = tls.Server(s, &tls.Config{
 					Certificates:             []tls.Certificate{cert},
 					Rand:                     rand.Reader,
-					NextProtos:               []string{VersionTLS},
+					NextProtos:               []string{ProtocolTLS},
 					PreferServerCipherSuites: true,
 				})
 			}
@@ -180,7 +183,7 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 	if overTLS {
 		c = tls.Client(c, &tls.Config{
 			Rand:               rand.Reader,
-			NextProtos:         []string{VersionTLS},
+			NextProtos:         []string{ProtocolTLS},
 			InsecureSkipVerify: true,
 		})
 	}
