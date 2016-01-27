@@ -564,7 +564,11 @@ func (f *UnknownFrame) readFrom(r *frameReader) error {
 	f.StreamID = r.streamID
 	f.Flags = r.flags
 	f.PayloadLen = int(r.payloadLen)
-	r.lastPayload = &framePayload{r, f.PayloadLen, 0}
+
+	r.payload.r = r
+	r.payload.n = f.PayloadLen
+	r.payload.p = 0
+	r.lastPayload = &r.payload
 	f.Payload = r.lastPayload
 
 	return nil
