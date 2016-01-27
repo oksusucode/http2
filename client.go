@@ -48,8 +48,8 @@ type Dialer struct {
 // If protocol is "h2", request are ignored.
 //
 // Examples:
-//	d.Dial("h2", "12.34.56.78:8443", nil)
-//	d.Dial("h2c", "google.com:http", nil)
+//	d.Dial("h2", "google.com:https", nil)
+//	d.Dial("h2c", "12.34.56.78:http", nil)
 //	d.Dial(http2.ProtocolTCP, request.Host, request)
 //
 func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, error) {
