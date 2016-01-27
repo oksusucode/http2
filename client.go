@@ -225,7 +225,7 @@ func (c *Conn) clientUpgrade(req *http.Request) (err error) {
 	// The client does so by
 	// making an HTTP/1.1 request that includes an Upgrade header field with
 	// the "h2c" token.
-	req.Header.Set("Upgrade", ProtocolTLS)
+	req.Header.Set("Upgrade", ProtocolTCP)
 
 	// Since the upgrade is only intended to apply to the immediate
 	// connection, a client sending the HTTP2-Settings header field MUST
@@ -282,7 +282,7 @@ func (c *Conn) clientUpgrade(req *http.Request) (err error) {
 	}
 
 	if res.StatusCode != http.StatusSwitchingProtocols ||
-		!containsValue(res.Header, "Upgrade", ProtocolTLS) ||
+		!containsValue(res.Header, "Upgrade", ProtocolTCP) ||
 		!containsValue(res.Header, "Connection", "Upgrade") {
 		var reason string
 		if res.Body != nil {

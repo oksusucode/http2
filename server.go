@@ -214,7 +214,7 @@ func (c *Conn) serverUpgrade(upgrade *http.Request, hijacked bool) error {
 	// The client does so by
 	// making an HTTP/1.1 request that includes an Upgrade header field with
 	// the "h2c" token.
-	if !containsValue(upgrade.Header, "Upgrade", ProtocolTLS) {
+	if !containsValue(upgrade.Header, "Upgrade", ProtocolTCP) {
 		goto fail
 	}
 
