@@ -10,14 +10,151 @@ import (
 	"net/http"
 )
 
+// A Dialer contains options for connecting to HTTP/2 server.
 type Dialer struct {
+	// DialTCP specifies the dial function for creating unencrypted
+	// TCP connections.
+	// If DialTCP is nil, net.Dial is used.
+	DialTCP func(network, addr string) (net.Conn, error)
+
+	// DialTLS specifies an optional dial function for creating
+	// TLS connections for non-proxied HTTPS requests.
+	//
+	// If DialTLS is nil, DialTCP and TLSClientConfig are used.
+	//
+	// If DialTLS is set, the TLSClientConfig are ignored.
+	DialTLS func(network, addr string) (net.Conn, error)
+
+	// Config specifies the connection configuration to use with
+	// ClientConn. If nil, the default configuration is used.
 	Config *Config
+
+	// TLSClientConfig specifies the TLS configuration to use with
+	// tls.Client. If nil, the default configuration is used.
+	TLSClientConfig *tls.Config
 }
 
+// Dial connects to the address on the named protocol and
+// then initiates a HTTP/2 negotiation, returning the
+// resulting HTTP/2 connection.
+//
+// Allowed protocols are "h2" (ALPN) and "h2c" (Upgrade).
+//
+// The request parameter specifies an HTTP/1.1 request
+// to send for client's upgrade.
+//
+// If request is nil, default upgrade request are used.
+//
+// If protocol is "h2", request are ignored.
+//
+// Examples:
+//	d.Dial("h2", "12.34.56.78:8443", nil)
+//	d.Dial("h2c", "google.com:http", nil)
+//	d.Dial(http2.ProtocolTCP, request.Host, request)
+//
+func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, error) {
+	if d == nil {
+		d = &Dialer{}
+	}
+	switch protocol {
+	case ProtocolTCP:
+		if address == "" {
+			if request != nil {
+				address = request.Host
+			} else {
+				address = ":http"
+			}
+		}
+
+		c, err := d.dialTCP("tcp", address)
+		if err != nil {
+			return nil, err
+		}
+		conn := ClientConn(c, d.Config, request)
+		return conn, conn.Handshake()
+	case ProtocolTLS:
+		if address == "" {
+			address = ":https"
+		}
+
+		if dialTLS := d.DialTLS; dialTLS != nil {
+			c, err := dialTLS("tcp", address)
+			if err != nil {
+				return nil, err
+			}
+			conn := ClientConn(c, d.Config, request)
+			return conn, conn.Handshake()
+		}
+
+		config := cloneTLSClientConfig(d.TLSClientConfig)
+		haveNPN := false
+		for _, p := range config.NextProtos {
+			if p == ProtocolTLS {
+				haveNPN = true
+				break
+			}
+		}
+		if !haveNPN {
+			config.NextProtos = append(config.NextProtos, ProtocolTLS)
+		}
+		if config.ServerName == "" {
+			i := len(address)
+			for i--; i >= 0; i-- {
+				if address[i] == ':' {
+					break
+				}
+			}
+			if i < 0 {
+				config.ServerName = address
+			} else {
+				host, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return nil, err
+				}
+				config.ServerName = host
+			}
+		}
+		c, err := d.dialTCP("tcp", address)
+		if err != nil {
+			return nil, err
+		}
+		tc := tls.Client(c, config)
+		conn := ClientConn(tc, d.Config, request)
+		if err = conn.Handshake(); err == nil && !config.InsecureSkipVerify {
+			err = tc.VerifyHostname(config.ServerName)
+		}
+		if err != nil {
+			conn.close()
+		}
+		return conn, err
+	default:
+		return nil, fmt.Errorf("http2: bad protocol %s", protocol)
+	}
+}
+
+func (d *Dialer) dialTCP(network, addr string) (net.Conn, error) {
+	if dial := d.DialTCP; dial != nil {
+		return dial(network, addr)
+	}
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	c.(*net.TCPConn).SetNoDelay(true)
+	return c, nil
+}
+
+// ClientConn returns a new HTTP/2 client side connection
+// using rawConn as the underlying transport.
+// If config is nil, the default configuration is used.
+// The req parameter optionally specifies the request to
+// send for client's upgrade.
 func ClientConn(rawConn net.Conn, config *Config, req *http.Request) *Conn {
 	conn := newConn(rawConn, false, config)
-	conn.upgradeFunc = func() error {
-		return conn.clientUpgrade(req)
+	if req != nil {
+		conn.upgradeFunc = func() error {
+			return conn.clientUpgrade(req)
+		}
 	}
 	return conn
 }
@@ -34,7 +171,7 @@ func (c *Conn) clientHandshake() error {
 
 		state := tlsConn.ConnectionState()
 
-		if !state.NegotiatedProtocolIsMutual || state.NegotiatedProtocol != VersionTLS {
+		if !state.NegotiatedProtocolIsMutual || state.NegotiatedProtocol != ProtocolTLS {
 			return HandshakeError(fmt.Sprintf("bad protocol %s", state.NegotiatedProtocol))
 		}
 	} else {
@@ -88,7 +225,7 @@ func (c *Conn) clientUpgrade(req *http.Request) (err error) {
 	// The client does so by
 	// making an HTTP/1.1 request that includes an Upgrade header field with
 	// the "h2c" token.
-	req.Header.Set("Upgrade", VersionTCP)
+	req.Header.Set("Upgrade", ProtocolTLS)
 
 	// Since the upgrade is only intended to apply to the immediate
 	// connection, a client sending the HTTP2-Settings header field MUST
@@ -145,7 +282,7 @@ func (c *Conn) clientUpgrade(req *http.Request) (err error) {
 	}
 
 	if res.StatusCode != http.StatusSwitchingProtocols ||
-		!containsValue(res.Header, "Upgrade", VersionTCP) ||
+		!containsValue(res.Header, "Upgrade", ProtocolTLS) ||
 		!containsValue(res.Header, "Connection", "Upgrade") {
 		var reason string
 		if res.Body != nil {
@@ -161,6 +298,31 @@ func (c *Conn) clientUpgrade(req *http.Request) (err error) {
 	}
 
 	return
+}
+
+func cloneTLSClientConfig(cfg *tls.Config) *tls.Config {
+	if cfg == nil {
+		return &tls.Config{}
+	}
+	return &tls.Config{
+		Rand:                     cfg.Rand,
+		Time:                     cfg.Time,
+		Certificates:             cfg.Certificates,
+		NameToCertificate:        cfg.NameToCertificate,
+		GetCertificate:           cfg.GetCertificate,
+		RootCAs:                  cfg.RootCAs,
+		NextProtos:               cfg.NextProtos,
+		ServerName:               cfg.ServerName,
+		ClientAuth:               cfg.ClientAuth,
+		ClientCAs:                cfg.ClientCAs,
+		InsecureSkipVerify:       cfg.InsecureSkipVerify,
+		CipherSuites:             cfg.CipherSuites,
+		PreferServerCipherSuites: cfg.PreferServerCipherSuites,
+		ClientSessionCache:       cfg.ClientSessionCache,
+		MinVersion:               cfg.MinVersion,
+		MaxVersion:               cfg.MaxVersion,
+		CurvePreferences:         cfg.CurvePreferences,
+	}
 }
 
 type RoundTripper struct{}
