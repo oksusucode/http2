@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// A Conn represents a HTTP/2 connection.
 type Conn struct {
 	config *Config
 
@@ -20,8 +21,9 @@ type Conn struct {
 	handshakeL        sync.Mutex
 	handshakeComplete bool
 	handshakeErr      error
-	upgradeFunc       func() error
-	upgradeFrames     []Frame
+
+	upgradeFunc   func() error
+	upgradeFrames []Frame
 
 	rio         sync.Mutex
 	frameReader *frameReader
@@ -50,12 +52,23 @@ type Conn struct {
 	idTimeoutCh <-chan time.Time
 }
 
+// A Config structure is used to configure a HTTP/2 client or server connection.
 type Config struct {
-	InitialSettings    Settings
-	HandshakeTimeout   time.Duration
+	// InitialSettings specifies the Http2Settings to use for the initial
+	// connection settings exchange. If nil, empty settings is used.
+	InitialSettings Settings
+
+	// HandshakeTimeout specifies the duration for the handshake to complete.
+	HandshakeTimeout time.Duration
+
+	// AllowLowTLSVersion controls whether a server allows the client's
+	// TLSVersion is lower than TLS 1.2.
 	AllowLowTLSVersion bool
-	ReadBufSize        int
-	WriteBufSize       int
+
+	// ReadBufSize and WriteBufSize specify I/O buffer sizes. If the buffer
+	// size is zero, then a default value of 4096 is used. The I/O buffer sizes
+	// do not limit the size of the frames that can be sent or received.
+	ReadBufSize, WriteBufSize int
 }
 
 var defaultConfig = Config{}
@@ -322,6 +335,7 @@ func (s *connState) applySettings(settings Settings) (err error) {
 	return
 }
 
+// WriteFrame writes a frame to the connection.
 func (c *Conn) WriteFrame(frame Frame) error {
 	if c.Closed() {
 		return ErrClosed
@@ -494,6 +508,13 @@ var ErrClosed = errors.New("http2: connection has been closed")
 
 func (c *Conn) CloseTimeout(timeout time.Duration) error {
 	if atomic.CompareAndSwapInt32(&c.closing, 0, 1) {
+		c.handshakeL.Lock()
+		if !c.handshakeComplete {
+			c.handshakeL.Unlock()
+			return c.close()
+		}
+		c.handshakeL.Unlock()
+
 		// Endpoints SHOULD send a GOAWAY frame when ending a connection,
 		// providing that circumstances permit it.
 		c.writeFrame(&GoAwayFrame{LastStreamID: c.LastStreamID(), ErrCode: ErrCodeNo})
@@ -539,6 +560,7 @@ func (c *Conn) close() error {
 	return c.rwc.Close()
 }
 
+// LocalAddr returns the local network address.
 func (c *Conn) LocalAddr() net.Addr {
 	if nc, ok := c.rwc.(net.Conn); ok {
 		return nc.LocalAddr()
@@ -546,6 +568,7 @@ func (c *Conn) LocalAddr() net.Addr {
 	return nil
 }
 
+// RemoteAddr returns the remote network address.
 func (c *Conn) RemoteAddr() net.Addr {
 	if nc, ok := c.rwc.(net.Conn); ok {
 		return nc.RemoteAddr()
@@ -673,6 +696,7 @@ func (w *writeQueue) add(frame Frame, control bool) {
 	}
 }
 
+// ReadFrame reads a frame from the connection.
 func (c *Conn) ReadFrame() (Frame, error) {
 	if err := c.Handshake(); err != nil {
 		return nil, err
@@ -927,10 +951,17 @@ func (r *data) returnBytesLocked() error {
 
 var errBadConnPreface = errors.New("http2: bad connection preface")
 
+// HandshakeError represents connection handshake error.
 type HandshakeError string
 
-func (e HandshakeError) Error() string { return fmt.Sprintf("http2: %s", string(e)) }
+func (e HandshakeError) Error() string {
+	return fmt.Sprintf("http2: %s", string(e))
+}
 
+// Handshake runs the client or server handshake
+// protocol if it has not yet been run.
+// Most uses of this package need not call Handshake
+// explicitly: the first Read or Write will call it automatically.
 func (c *Conn) Handshake() error {
 	c.handshakeL.Lock()
 	defer c.handshakeL.Unlock()
