@@ -129,16 +129,19 @@ again:
 	}
 
 	if err = frame.readFrom(r); err != nil {
-		// A decoding error in a header block MUST be treated as a connection error
-		// (Section 5.4.1) of type COMPRESSION_ERROR.
-		if _, ok := err.(hpack.DecodingError); ok {
-			return nil, ConnError{err, ErrCodeCompression}
-		}
-
 		// SEE 10.5.  Denial-of-Service Considerations
 		//     10.5.1.  Limits on Header Block Size
 		if err == hpack.ErrHeaderFieldsTooLarge {
 			return nil, ConnError{err, ErrCodeEnhanceYourCalm}
+		}
+
+		switch err.(type) {
+		case hpack.DecodingError:
+			// A decoding error in a header block MUST be treated as a connection error
+			// (Section 5.4.1) of type COMPRESSION_ERROR.
+			return nil, ConnError{err, ErrCodeCompression}
+		default:
+			return nil, err
 		}
 	}
 
