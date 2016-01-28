@@ -984,20 +984,18 @@ func (c *Conn) Handshake() error {
 	}
 
 	if timeout := c.config.HandshakeTimeout; timeout > 0 {
-		done := make(chan struct{})
+		errCh := make(chan error, 2)
+		time.AfterFunc(timeout, func() {
+			errCh <- HandshakeError("handshake timed out")
+		})
 		go func() {
 			if c.server {
-				c.handshakeErr = c.serverHandshake()
+				errCh <- c.serverHandshake()
 			} else {
-				c.handshakeErr = c.clientHandshake()
+				errCh <- c.clientHandshake()
 			}
-			close(done)
 		}()
-		select {
-		case <-done:
-		case <-time.After(timeout):
-			c.handshakeErr = HandshakeError("handshake timed out")
-		}
+		c.handshakeErr = <-errCh
 	} else {
 		if c.server {
 			c.handshakeErr = c.serverHandshake()
