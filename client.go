@@ -58,14 +58,10 @@ func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, e
 	}
 	switch protocol {
 	case ProtocolTCP:
-		if address == "" {
-			if request != nil {
-				address = request.Host
-			} else {
-				address = ":http"
-			}
+		if address == "" && request != nil {
+			address = request.Host
 		}
-
+		address = joinHostPort(address, "http")
 		c, err := d.dialTCP("tcp", address)
 		if err != nil {
 			return nil, err
@@ -73,10 +69,7 @@ func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, e
 		conn := ClientConn(c, d.Config, request)
 		return conn, conn.Handshake()
 	case ProtocolTLS:
-		if address == "" {
-			address = ":https"
-		}
-
+		address = joinHostPort(address, "https")
 		if dialTLS := d.DialTLS; dialTLS != nil {
 			c, err := dialTLS("tcp", address)
 			if err != nil {
@@ -85,7 +78,6 @@ func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, e
 			conn := ClientConn(c, d.Config, nil)
 			return conn, conn.Handshake()
 		}
-
 		config := cloneTLSClientConfig(d.TLSClientConfig)
 		haveNPN := false
 		for _, p := range config.NextProtos {
@@ -98,21 +90,11 @@ func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, e
 			config.NextProtos = append(config.NextProtos, ProtocolTLS)
 		}
 		if config.ServerName == "" {
-			i := len(address)
-			for i--; i >= 0; i-- {
-				if address[i] == ':' {
-					break
-				}
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
 			}
-			if i < 0 {
-				config.ServerName = address
-			} else {
-				host, _, err := net.SplitHostPort(address)
-				if err != nil {
-					return nil, err
-				}
-				config.ServerName = host
-			}
+			config.ServerName = host
 		}
 		c, err := d.dialTCP("tcp", address)
 		if err != nil {
@@ -142,6 +124,25 @@ func (d *Dialer) dialTCP(network, addr string) (net.Conn, error) {
 	}
 	c.(*net.TCPConn).SetNoDelay(true)
 	return c, nil
+}
+
+func joinHostPort(host, port string) string {
+	i := len(host)
+	j := i
+	for i--; i >= 0; i-- {
+		if host[i] == ':' {
+			break
+		}
+	}
+	for j--; j >= 0; j-- {
+		if host[j] == ']' {
+			break
+		}
+	}
+	if i < 0 || i < j {
+		return host + ":" + port
+	}
+	return host
 }
 
 // ClientConn returns a new HTTP/2 client side connection
@@ -325,7 +326,8 @@ func cloneTLSClientConfig(cfg *tls.Config) *tls.Config {
 	}
 }
 
-type RoundTripper struct{}
+type RoundTripper struct {
+}
 
 func (RoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, nil
