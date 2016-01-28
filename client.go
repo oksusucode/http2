@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 )
 
 // A Dialer contains options for connecting to HTTP/2 server.
@@ -115,10 +116,12 @@ func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, e
 }
 
 func (d *Dialer) dialTCP(network, addr string) (net.Conn, error) {
-	if dial := d.DialTCP; dial != nil {
+	dial := d.DialTCP
+	if dial != nil {
 		return dial(network, addr)
 	}
-	c, err := net.Dial("tcp", addr)
+	dial = (&net.Dialer{Timeout: 3 * time.Second}).Dial
+	c, err := dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
