@@ -24,6 +24,7 @@ type Conn struct {
 
 	upgradeFunc   func() error
 	upgradeFrames []Frame
+	upgradeBody   io.Closer
 
 	rio         sync.Mutex
 	frameReader *frameReader
@@ -705,9 +706,17 @@ func (c *Conn) ReadFrame() (Frame, error) {
 	c.rio.Lock()
 	defer c.rio.Unlock()
 
+	if c.upgradeBody != nil {
+		c.upgradeBody.Close()
+		c.upgradeBody = nil
+	}
+
 	if len(c.upgradeFrames) > 0 {
 		frame := c.upgradeFrames[0]
 		c.upgradeFrames = c.upgradeFrames[1:]
+		if v, ok := frame.(*DataFrame); ok {
+			c.upgradeBody = v.Data.(io.Closer)
+		}
 		return frame, nil
 	}
 
