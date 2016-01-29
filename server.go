@@ -292,13 +292,17 @@ fail:
 	stream.transition(true, FrameHeaders, true)
 
 	if !hijacked {
-		headers := &HeadersFrame{1, Header(upgrade.Header), Priority{}, 0, upgrade.Body == nil}
-		headers.SetMethod(upgrade.Method)
-		headers.SetAuthority(upgrade.Host)
-		headers.SetPath(upgrade.URL.Path)
-		headers.SetScheme("http")
+		headers := &HeadersFrame{1, nil, Priority{}, 0, false}
+		headers.readFromRequest(upgrade, true)
+		if headers.Get("content-length") == "" {
+			if upgrade.Body != nil {
+				upgrade.Body.Close()
+			}
+			headers.EndStream = true
+		}
+		c.upgradeFrames = make([]Frame, 0, 2)
 		c.upgradeFrames = append(c.upgradeFrames, headers)
-		if upgrade.Body != nil {
+		if !headers.EndStream {
 			c.upgradeFrames = append(c.upgradeFrames, &DataFrame{1, upgrade.Body, int(upgrade.ContentLength), 0, true})
 		}
 	}

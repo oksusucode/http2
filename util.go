@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -401,10 +403,85 @@ func (h *Header) add(key, value string, _ bool) error {
 		return ErrMalformedHeader
 	}
 
+	// HTTP/2 does not use the Connection header field to indicate
+	// connection-specific header fields; in this protocol, connection-
+	// specific metadata is conveyed by other means.  An endpoint MUST NOT
+	// generate an HTTP/2 message containing connection-specific header
+	// fields; any message containing connection-specific header fields MUST
+	// be treated as malformed (Section 8.1.2.6).
+	if key == "connection" {
+		return ErrMalformedHeader
+	}
+
 	if *h == nil {
 		*h = make(Header)
 	}
 	(*h)[key] = append((*h)[key], value)
+
+	return nil
+}
+
+func (h *Header) readFromRequest(req *http.Request, skipVerify bool) error {
+	if *h == nil {
+		*h = make(Header, len(req.Header)+5)
+	}
+
+	if req.Method != "CONNECT" {
+		// All HTTP/2 requests MUST include exactly one valid value for the
+		// ":method", ":scheme", and ":path" pseudo-header fields, unless it is
+		// a CONNECT request (Section 8.3).
+		h.SetMethod(req.Method)
+		h.SetScheme(req.URL.Scheme)
+		h.SetPath(req.URL.RequestURI())
+	}
+	if req.Host != "" {
+		h.SetAuthority(req.Host)
+	} else {
+		h.SetAuthority(req.URL.Host)
+	}
+
+	for k := range req.Trailer {
+		k = CanonicalHTTP2HeaderKey(k)
+		switch k {
+		case
+			"transfer-encoding",
+			"trailer",
+			"content-length":
+			if skipVerify {
+				continue
+			}
+			return ErrMalformedHeader
+		}
+		(*h)["trailer"] = append((*h)["trailer"], k)
+	}
+
+	for k, vv := range req.Header {
+		k = CanonicalHTTP2HeaderKey(k)
+		switch k {
+		case
+			"host",
+			"connection",
+			"keep-alive",
+			"proxy-connection",
+			"transfer-encoding",
+			"upgrade",
+			"content-length":
+			continue
+		}
+		for _, v := range vv {
+			(*h)[k] = append((*h)[k], v)
+		}
+	}
+
+	switch {
+	case req.ContentLength > 0:
+		h.Set("content-length", strconv.FormatInt(req.ContentLength, 10))
+	case req.ContentLength == 0:
+		switch req.Method {
+		case "POST", "PUT", "PATCH":
+			h.Set("content-length", "0")
+		}
+	}
 
 	return nil
 }
