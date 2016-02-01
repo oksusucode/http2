@@ -40,6 +40,8 @@ type StreamError struct {
 
 type StreamErrorList []*StreamError
 
+type MalformedError string
+
 const (
 	maxConcurrentStreams   = 1<<31 - 1
 	maxInitialWindowSize   = 1<<31 - 1

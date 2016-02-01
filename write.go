@@ -152,7 +152,7 @@ func (f *HeadersFrame) writeTo(w *frameWriter) error {
 	for k, _ := range pseudoHeader {
 		if vv, ok := f.Header[k]; ok {
 			if len(vv) > 1 {
-				return ErrMalformedHeader
+				return errMalformedHeader
 			}
 			n, w.hpackBuf = w.EncodeHeaderField(w.hpackBuf, k, vv[0], false)
 			written += n
@@ -166,7 +166,7 @@ func (f *HeadersFrame) writeTo(w *frameWriter) error {
 		}
 
 		if k == "" || k[0] == ':' {
-			return ErrMalformedHeader
+			return errMalformedHeader
 		}
 
 		k = CanonicalHTTP2HeaderKey(k)
@@ -349,7 +349,7 @@ func (f *PushPromiseFrame) writeTo(w *frameWriter) error {
 	for k, _ := range pseudoHeader {
 		if vv, ok := f.Header[k]; ok {
 			if len(vv) > 1 {
-				return ErrMalformedHeader
+				return errMalformedHeader
 			}
 			n, w.hpackBuf = w.EncodeHeaderField(w.hpackBuf, k, vv[0], false)
 			written += n
@@ -363,7 +363,7 @@ func (f *PushPromiseFrame) writeTo(w *frameWriter) error {
 		}
 
 		if k == "" || k[0] == ':' {
-			return ErrMalformedHeader
+			return errMalformedHeader
 		}
 
 		k = CanonicalHTTP2HeaderKey(k)

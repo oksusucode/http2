@@ -292,18 +292,14 @@ fail:
 	stream.transition(true, FrameHeaders, true)
 
 	if !hijacked {
-		headers := &HeadersFrame{1, nil, Priority{}, 0, false}
-		headers.readFromRequest(upgrade, true)
-		if headers.Get("content-length") == "" {
-			if upgrade.Body != nil {
-				upgrade.Body.Close()
-			}
-			headers.EndStream = true
-		}
+		h, _ := requestToHeader(upgrade, true)
+		headers := &HeadersFrame{1, h, Priority{}, 0, upgrade.ContentLength > 0 && upgrade.Body == nil}
 		c.upgradeFrames = make([]Frame, 0, 2)
 		c.upgradeFrames = append(c.upgradeFrames, headers)
 		if !headers.EndStream {
 			c.upgradeFrames = append(c.upgradeFrames, &DataFrame{1, upgrade.Body, int(upgrade.ContentLength), 0, true})
+		} else if upgrade.Body != nil {
+			upgrade.Body.Close()
 		}
 	}
 
@@ -375,26 +371,5 @@ func cloneTLSConfig(cfg *tls.Config) *tls.Config {
 		MinVersion:               cfg.MinVersion,
 		MaxVersion:               cfg.MaxVersion,
 		CurvePreferences:         cfg.CurvePreferences,
-	}
-}
-
-func badCipher(cipher uint16) bool {
-	switch cipher {
-	case
-		tls.TLS_RSA_WITH_RC4_128_SHA,
-		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
-		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
-		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-		tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
-		tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
-		tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
-		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:
-
-		return true
-	default:
-		return false
 	}
 }

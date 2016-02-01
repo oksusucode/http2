@@ -2,10 +2,9 @@ package http2
 
 import (
 	"bytes"
-	"errors"
+	"crypto/tls"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 )
 
@@ -71,6 +70,10 @@ func (e StreamErrorList) Err() error {
 		return nil
 	}
 	return e
+}
+
+func (e MalformedError) Error() string {
+	return fmt.Sprintf("http2: malformed; %s", string(e))
 }
 
 func (id SettingID) String() string {
@@ -388,29 +391,19 @@ func (h Header) get(key string) string {
 	return ""
 }
 
-var ErrMalformedHeader = errors.New("malformed header")
+var errMalformedHeader = MalformedError("invalid header field")
 
 func (h *Header) add(key, value string, _ bool) error {
 	if key[0] == ':' {
 		if h.Len() > 5 {
-			return ErrMalformedHeader
+			return errMalformedHeader
 		}
 		if _, pseudo := pseudoHeader[key]; !pseudo {
-			return ErrMalformedHeader
+			return errMalformedHeader
 		}
 	}
-	if !ValidHeaderField(key) {
-		return ErrMalformedHeader
-	}
-
-	// HTTP/2 does not use the Connection header field to indicate
-	// connection-specific header fields; in this protocol, connection-
-	// specific metadata is conveyed by other means.  An endpoint MUST NOT
-	// generate an HTTP/2 message containing connection-specific header
-	// fields; any message containing connection-specific header fields MUST
-	// be treated as malformed (Section 8.1.2.6).
-	if key == "connection" {
-		return ErrMalformedHeader
+	if !validHeaderKey(key) {
+		return errMalformedHeader
 	}
 
 	if *h == nil {
@@ -421,86 +414,91 @@ func (h *Header) add(key, value string, _ bool) error {
 	return nil
 }
 
-func (h *Header) readFromRequest(req *http.Request, skipVerify bool) error {
-	if *h == nil {
-		*h = make(Header, len(req.Header)+5)
-	}
+func requestToHeader(req *http.Request, skipVerify bool) (Header, error) {
+	h := make(Header, len(req.Header))
 
+	// All HTTP/2 requests MUST include exactly one valid value for the
+	// ":method", ":scheme", and ":path" pseudo-header fields, unless it is
+	// a CONNECT request (Section 8.3).
 	if req.Method != "CONNECT" {
-		// All HTTP/2 requests MUST include exactly one valid value for the
-		// ":method", ":scheme", and ":path" pseudo-header fields, unless it is
-		// a CONNECT request (Section 8.3).
 		h.SetMethod(req.Method)
-		h.SetScheme(req.URL.Scheme)
-		h.SetPath(req.URL.RequestURI())
-	}
-	if req.Host != "" {
-		h.SetAuthority(req.Host)
-	} else {
-		h.SetAuthority(req.URL.Host)
+
+		if scheme := req.URL.Scheme; scheme != "" {
+			h.SetScheme(scheme)
+		} else {
+			if i := strings.LastIndexByte(req.URL.Host, ':'); i >= 0 && i > strings.LastIndexByte(req.URL.Host, ']') {
+				switch req.URL.Host[i:] {
+				case ":http", ":80":
+					scheme = "http"
+				case ":https", ":443":
+					scheme = "https"
+				}
+			}
+
+			if scheme != "" {
+				h.SetScheme(scheme)
+			} else if !skipVerify {
+				return nil, MalformedError(":scheme must be specified")
+			}
+		}
+
+		if path := req.URL.RequestURI(); path != "" {
+			if req.URL.Fragment != "" {
+				path += "#" + req.URL.Fragment
+			}
+			h.SetPath(path)
+		} else if !skipVerify {
+			return nil, MalformedError(":path must be specified")
+		} else {
+			h.SetPath("/")
+		}
 	}
 
-	for k := range req.Trailer {
-		k = CanonicalHTTP2HeaderKey(k)
-		switch k {
-		case
-			"transfer-encoding",
-			"trailer",
-			"content-length":
-			if skipVerify {
-				continue
-			}
-			return ErrMalformedHeader
-		}
-		(*h)["trailer"] = append((*h)["trailer"], k)
-	}
+	h.SetAuthority(req.URL.Host)
 
 	for k, vv := range req.Header {
 		k = CanonicalHTTP2HeaderKey(k)
-		switch k {
-		case
-			"host",
-			"connection",
-			"keep-alive",
-			"proxy-connection",
-			"transfer-encoding",
-			"upgrade",
-			"content-length":
+
+		if badHeader(k) {
 			continue
 		}
+
+		if k == "cookie" {
+			for _, v := range vv {
+				if i := strings.IndexByte(v, ';'); i > 0 {
+					for _, c := range strings.Split(v, ";") {
+						h.Add(k, strings.TrimSpace(c))
+					}
+				} else {
+					h.Add(k, v)
+				}
+			}
+			continue
+		}
+
+		if k == "te" && len(vv) != 1 && strings.ToLower(vv[0]) != "trailers" {
+			return nil, MalformedError(fmt.Sprintf("bad value for te: %s", vv[0]))
+		}
+
 		for _, v := range vv {
-			(*h)[k] = append((*h)[k], v)
+			h.Add(k, v)
 		}
 	}
 
-	switch {
-	case req.ContentLength > 0:
-		h.Set("content-length", strconv.FormatInt(req.ContentLength, 10))
-	case req.ContentLength == 0:
-		switch req.Method {
-		case "POST", "PUT", "PATCH":
-			h.Set("content-length", "0")
-		}
-	}
-
-	return nil
-}
-
-func (h Header) sensitive(key, value string) bool {
-	return false
+	return h, nil
 }
 
 func CanonicalHTTP2HeaderKey(s string) string {
 	if v, ok := commonHeader[s]; ok {
 		return v
 	}
-	if ValidHeaderField(s) {
+	if validHeaderKey(s) {
 		return s
 	}
 	return strings.ToLower(s)
 }
 
-func ValidHeaderField(v string) bool {
+func validHeaderKey(v string) bool {
 	if len(v) == 0 {
 		return false
 	}
@@ -544,8 +542,45 @@ loop:
 	return true
 }
 
+func badHeader(key string) bool {
+	switch key {
+	case
+		"connection",
+		"keep-alive",
+		"proxy-connection",
+		"transfer-encoding",
+		"host",
+		"upgrade":
+
+		return true
+	default:
+		return false
+	}
+}
+
+func badCipher(cipher uint16) bool {
+	switch cipher {
+	case
+		tls.TLS_RSA_WITH_RC4_128_SHA,
+		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:
+
+		return true
+	default:
+		return false
+	}
+}
+
 var (
-	pseudoHeader = make(map[string]string)
+	pseudoHeader = make(map[string]struct{})
 	commonHeader = make(map[string]string)
 )
 
@@ -557,7 +592,7 @@ func init() {
 		":path",
 		":status",
 	} {
-		pseudoHeader[v] = v
+		pseudoHeader[v] = struct{}{}
 	}
 
 	for _, v := range []string{
