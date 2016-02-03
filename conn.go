@@ -47,10 +47,9 @@ type Conn struct {
 	*connState
 	remote *connState
 
-	idCh        chan struct{}
-	idState     int32
-	idTimer     *time.Timer
-	idTimeoutCh <-chan time.Time
+	idCh    chan struct{}
+	idState int32
+	idTimer *time.Timer
 }
 
 // A Config structure is used to configure a HTTP/2 client or server connection.
@@ -123,6 +122,7 @@ func newConn(rwc io.ReadWriteCloser, server bool, config *Config) *Conn {
 	}
 	conn.idCh = make(chan struct{}, 1)
 	conn.idCh <- struct{}{}
+	conn.idTimer = time.NewTimer(24 * time.Hour)
 
 	go conn.writeLoop()
 
@@ -144,21 +144,13 @@ again:
 		return 0, ErrClosed
 	case <-c.idCh:
 		const cancelTimeout = 1 * time.Second
-
-		if c.idTimer == nil {
-			c.idTimer = time.NewTimer(cancelTimeout)
-			c.idTimeoutCh = c.idTimer.C
-		} else {
-			c.idTimer.Reset(cancelTimeout)
-		}
-
+		c.idTimer.Reset(cancelTimeout)
 		atomic.StoreInt32(&c.idState, 1)
-
 		if c.nextStreamID > 1 {
 			return c.nextStreamID, nil
 		}
 		return c.nextStreamID + 2, nil
-	case <-c.idTimeoutCh:
+	case <-c.idTimer.C:
 		select {
 		case <-c.closeCh:
 			return 0, ErrClosed
@@ -555,9 +547,7 @@ func (c *Conn) close() error {
 		}
 	}
 	close(c.closeCh)
-	if c.idTimer != nil {
-		c.idTimer.Stop()
-	}
+	c.idTimer.Stop()
 	return c.rwc.Close()
 }
 
