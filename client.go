@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -60,7 +61,9 @@ func (d *Dialer) Dial(protocol, address string, request *http.Request) (*Conn, e
 	switch protocol {
 	case ProtocolTCP:
 		if address == "" && request != nil {
-			address = request.Host
+			if address = request.Host; address == "" {
+				address = request.URL.Host
+			}
 		}
 		address = joinHostPort(address, "http")
 		c, err := d.dialTCP("tcp", address)
@@ -130,19 +133,7 @@ func (d *Dialer) dialTCP(network, addr string) (net.Conn, error) {
 }
 
 func joinHostPort(host, port string) string {
-	i := len(host)
-	j := i
-	for i--; i >= 0; i-- {
-		if host[i] == ':' {
-			break
-		}
-	}
-	for j--; j >= 0; j-- {
-		if host[j] == ']' {
-			break
-		}
-	}
-	if i < 0 || i < j {
+	if i := strings.LastIndexByte(host, ':'); i < 0 || i < strings.LastIndexByte(host, ']') {
 		return host + ":" + port
 	}
 	return host
