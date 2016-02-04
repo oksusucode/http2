@@ -414,6 +414,38 @@ func (h *Header) add(key, value string, _ bool) error {
 	return nil
 }
 
+func (h *Header) addHeader(header map[string][]string) error {
+	for k, vv := range header {
+		k = CanonicalHTTP2HeaderKey(k)
+
+		if badHeader(k) {
+			continue
+		}
+
+		if k == "cookie" {
+			for _, v := range vv {
+				if i := strings.IndexByte(v, ';'); i > 0 {
+					for _, c := range strings.Split(v, ";") {
+						h.Add(k, strings.TrimSpace(c))
+					}
+				} else {
+					h.Add(k, v)
+				}
+			}
+			continue
+		}
+
+		if k == "te" && len(vv) != 1 && strings.ToLower(vv[0]) != "trailers" {
+			return MalformedError(fmt.Sprintf("bad value for te: %s", vv[0]))
+		}
+
+		for _, v := range vv {
+			h.Add(k, v)
+		}
+	}
+	return nil
+}
+
 func requestToHeader(req *http.Request, skipVerify bool) (Header, error) {
 	h := make(Header, len(req.Header))
 
@@ -456,33 +488,8 @@ func requestToHeader(req *http.Request, skipVerify bool) (Header, error) {
 
 	h.SetAuthority(req.URL.Host)
 
-	for k, vv := range req.Header {
-		k = CanonicalHTTP2HeaderKey(k)
-
-		if badHeader(k) {
-			continue
-		}
-
-		if k == "cookie" {
-			for _, v := range vv {
-				if i := strings.IndexByte(v, ';'); i > 0 {
-					for _, c := range strings.Split(v, ";") {
-						h.Add(k, strings.TrimSpace(c))
-					}
-				} else {
-					h.Add(k, v)
-				}
-			}
-			continue
-		}
-
-		if k == "te" && len(vv) != 1 && strings.ToLower(vv[0]) != "trailers" {
-			return nil, MalformedError(fmt.Sprintf("bad value for te: %s", vv[0]))
-		}
-
-		for _, v := range vv {
-			h.Add(k, v)
-		}
+	if err := h.addHeader(req.Header); err != nil {
+		return nil, err
 	}
 
 	return h, nil
