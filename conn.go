@@ -44,6 +44,7 @@ type Conn struct {
 	closeCh chan struct{}
 
 	settingsCh chan Settings
+
 	*connState
 	remote *connState
 
@@ -129,14 +130,18 @@ func newConn(rwc io.ReadWriteCloser, server bool, config *Config) *Conn {
 	return conn
 }
 
+// ServerConn returns whether or not this connection is the server-side.
 func (c *Conn) ServerConn() bool {
 	return c.server
 }
 
+// NumActiveStreams returns the number of active streams(OPEN or HALF CLOSED).
 func (c *Conn) NumActiveStreams() uint32 {
 	return atomic.LoadUint32(&c.numStreams) + atomic.LoadUint32(&c.remote.numStreams)
 }
 
+// NextStreamID returns the next generated stream id.
+//
 func (c *Conn) NextStreamID() (uint32, error) {
 again:
 	select {
@@ -163,23 +168,28 @@ again:
 	}
 }
 
+// LastStreamID returns the ID of the remote-stream last successfully created.
 func (c *Conn) LastStreamID() uint32 {
 	return atomic.LoadUint32(&c.remote.lastStreamID)
 }
 
+// Settings returns the local-side http2settings.
 func (c *Conn) Settings() Settings {
 	return c.settings.Load().(Settings)
 }
 
+// RemoteSettings returns the remote-side http2settings.
 func (c *Conn) RemoteSettings() Settings {
 	return c.remote.settings.Load().(Settings)
 }
 
+// GoAwayReceived returns whether or not a GOAWAY was received from the remote connection.
 func (c *Conn) GoAwayReceived() (bool, *GoAwayFrame) {
 	goAway, received := c.goAway.Load().(*GoAwayFrame)
 	return received, goAway
 }
 
+// GoAwaySent returns whether or not a GOAWAY was sent to the remote connection.
 func (c *Conn) GoAwaySent() (bool, *GoAwayFrame) {
 	goAway, sent := c.remote.goAway.Load().(*GoAwayFrame)
 	return sent, goAway
@@ -482,15 +492,18 @@ func (c *Conn) writeFrame(frame Frame) (err error) {
 	return
 }
 
+// Flush sends buffered frame to the remote connection.
 func (c *Conn) Flush() error {
 	c.writeQueue.add(nil, false)
 	return nil
 }
 
+// Closed returns whether or not this connection was closed.
 func (c *Conn) Closed() bool {
 	return atomic.LoadInt32(&c.closed) == 1
 }
 
+// Close closed this connection by sending GOAWAY frame.
 func (c *Conn) Close() error {
 	const defaultCloseTimeout = 3 * time.Second
 
@@ -499,6 +512,14 @@ func (c *Conn) Close() error {
 
 var ErrClosed = errors.New("http2: connection has been closed")
 
+// CloseTimeout closes this connection by sending GOAWAY
+// frame and waits for shutdown to finish.
+//
+// The timeout parameter specifies a time duration this
+// connection will wait for all streams to be closed before
+// closing the connection.
+//
+// If timeout is zero, it will close Immediately.
 func (c *Conn) CloseTimeout(timeout time.Duration) error {
 	if atomic.CompareAndSwapInt32(&c.closing, 0, 1) {
 		c.handshakeL.Lock()

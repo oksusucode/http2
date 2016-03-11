@@ -2,12 +2,16 @@ package http2
 
 import "io"
 
+// HTTP/2 Version Identification, defined in RFC 7540 section 3.1.
 const (
-	ProtocolTLS   = "h2"
-	ProtocolTCP   = "h2c"
-	ClientPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+	ProtocolTLS = "h2"
+	ProtocolTCP = "h2c"
 )
 
+// HTTP/2 Connection Preface, defined in RFC 7540 section 3.5.
+const ClientPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+
+// Error Codes, defined in RFC 7540 section 7.
 type ErrCode uint32
 
 const (
@@ -27,19 +31,23 @@ const (
 	ErrCodeHTTP11Required     ErrCode = 0xd
 )
 
+// Connection Error, defined in RFC 7540 section 5.4.1.
 type ConnError struct {
 	Err error
 	ErrCode
 }
 
+// Stream Error, defined in RFC 7540 section 5.4.2.
 type StreamError struct {
 	Err error
 	ErrCode
 	StreamID uint32
 }
 
+// StreamErrorList is a list of *StreamErrors.
 type StreamErrorList []*StreamError
 
+// Malformed Requests and Responses, defined in RFC 7540 section 8.1.2.6.
 type MalformedError string
 
 const (
@@ -55,6 +63,7 @@ const (
 	defaultMaxFrameSize         = maxFrameSizeLowerBound
 )
 
+// Defined SETTINGS Parameters, defined in RFC 7540 section 6.5.2.
 type SettingID uint16
 
 const (
@@ -73,10 +82,13 @@ type setting struct {
 	Value uint32
 }
 
+// Settings for local or remote in an HTTP/2 connection.
 type Settings []setting
 
+// Header is A collection of headers sent or received via HTTP/2.
 type Header map[string][]string
 
+// Frame Type Registry, defined in RFC 7540 section 11.2.
 type FrameType uint8
 
 const (
@@ -92,6 +104,7 @@ const (
 	FrameContinuation FrameType = 0x9
 )
 
+// Flags is An 8-bit field reserved for boolean flags specific to the frame type.
 type Flags uint8
 
 const (
@@ -102,12 +115,14 @@ const (
 	FlagPriority   Flags = 0x20
 )
 
+// Frame is the base interface implemented by all frame types.
 type Frame interface {
 	Type() FrameType
 	Stream() uint32
 	EndOfStream() bool
 }
 
+// DATA frame, defined in RFC 7540 section 6.1.
 type DataFrame struct {
 	StreamID  uint32
 	Data      io.Reader
@@ -116,12 +131,14 @@ type DataFrame struct {
 	EndStream bool
 }
 
+// Priority is the Stream prioritzation parameters.
 type Priority struct {
 	StreamDependency uint32
 	Weight           uint8
 	Exclusive        bool
 }
 
+// HEADERS frame, defined in RFC 7540 section 6.2.
 type HeadersFrame struct {
 	StreamID uint32
 	Header
@@ -130,21 +147,25 @@ type HeadersFrame struct {
 	EndStream bool
 }
 
+// PRIORITY frame, defined in RFC 7540 section 6.3.
 type PriorityFrame struct {
 	StreamID uint32
 	Priority
 }
 
+// RST_STREAM frame, defined in RFC 7540 section 6.4.
 type RSTStreamFrame struct {
 	StreamID uint32
 	ErrCode
 }
 
+// SETTINGS frame, defined in RFC 7540 section 6.5.
 type SettingsFrame struct {
 	Ack bool
 	Settings
 }
 
+// PUSH_PROMISE frame, defined in RFC 7540 section 6.6.
 type PushPromiseFrame struct {
 	StreamID         uint32
 	PromisedStreamID uint32
@@ -152,22 +173,26 @@ type PushPromiseFrame struct {
 	PadLen uint8
 }
 
+// PING frame, defined in RFC 7540 section 6.7.
 type PingFrame struct {
 	Ack  bool
 	Data [8]byte
 }
 
+// GOAWAY frame, defined in RFC 7540 section 6.8.
 type GoAwayFrame struct {
 	LastStreamID uint32
 	ErrCode
 	DebugData []byte
 }
 
+// WINDOW_UPDATE frame, defined in RFC 7540 section 6.9.
 type WindowUpdateFrame struct {
 	StreamID            uint32
 	WindowSizeIncrement uint32
 }
 
+// Unknown frame, not defined by the HTTP/2 spec.
 type UnknownFrame struct {
 	FrameType
 	StreamID uint32

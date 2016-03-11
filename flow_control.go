@@ -5,6 +5,8 @@ import (
 	"sync"
 )
 
+// InitialRecvWindow returns the initial receive flow control
+// window size for the given stream.
 func (c *Conn) InitialRecvWindow(streamID uint32) uint32 {
 	if streamID == 0 {
 		return c.connStream.recvFlow.initialWindow()
@@ -15,6 +17,9 @@ func (c *Conn) InitialRecvWindow(streamID uint32) uint32 {
 	return 0
 }
 
+// RecvWindow returns the portion of the recieve flow control
+// window for the given stream that is currently available for
+// receiving frames which are subject to flow control.
 func (c *Conn) RecvWindow(streamID uint32) uint32 {
 	var stream *stream
 	if streamID == 0 {
@@ -196,10 +201,15 @@ func (c *flowController) windowUpdate() error {
 	return nil
 }
 
+// InitialSendWindow returns the initial send flow control
+// window size for the given stream.
 func (c *Conn) InitialSendWindow(uint32) uint32 {
 	return c.RemoteSettings().InitialWindowSize()
 }
 
+// SendWindow returns the portion of the send flow control
+// window for the given stream that is currently available for
+// sending frames which are subject to flow control.
 func (c *Conn) SendWindow(streamID uint32) uint32 {
 	var stream *stream
 	if streamID == 0 {

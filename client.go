@@ -319,14 +319,3 @@ func cloneTLSClientConfig(cfg *tls.Config) *tls.Config {
 		CurvePreferences:         cfg.CurvePreferences,
 	}
 }
-
-type RoundTripper struct {
-}
-
-func (RoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, nil
-}
-
-var (
-	_ http.RoundTripper = (*RoundTripper)(nil)
-)

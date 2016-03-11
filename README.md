@@ -1,7 +1,7 @@
 
 A Go implementation of the HTTP/2 protocol.
 
-It is useful for client/server application development using the HTTP/2 connection/stream directly. (e.g. gRPC)
+It is useful for client/server application development using the HTTP/2 connection/stream directly.
 
 > currently under heavy development.
 
@@ -12,6 +12,9 @@ It is useful for client/server application development using the HTTP/2 connecti
 - [x] Flow Control
 - [x] Multiplexing without head-of-line blocking
 - [x] Graceful Shutdown
+
+## Documentation
+- [API Reference](https://godoc.org/github.com/nekolunar/http2)
 
 ## Benchmarks
 
@@ -24,17 +27,17 @@ It is useful for client/server application development using the HTTP/2 connecti
 
     go test -bench BenchmarkConnReadWriteTLS -benchmem
 
-    BenchmarkConnReadWriteTLS_1K_C1-8      30000         49149 ns/op        4594 B/op         60 allocs/op
-    BenchmarkConnReadWriteTLS_1K_C8-8      30000         49578 ns/op        4584 B/op         60 allocs/op
-    BenchmarkConnReadWriteTLS_1K_C64-8     30000         49078 ns/op        4545 B/op         59 allocs/op
-    BenchmarkConnReadWriteTLS_1K_C512-8    50000         48160 ns/op        4307 B/op         57 allocs/op
+    BenchmarkConnReadWriteTLS_1K_C1-8      30000         47584 ns/op        4594 B/op         60 allocs/op
+    BenchmarkConnReadWriteTLS_1K_C8-8      30000         46660 ns/op        4582 B/op         59 allocs/op
+    BenchmarkConnReadWriteTLS_1K_C64-8     30000         46424 ns/op        4540 B/op         59 allocs/op
+    BenchmarkConnReadWriteTLS_1K_C512-8    50000         45797 ns/op        4303 B/op         57 allocs/op
 
 #### HTTP/2 over TCP (Upgrade)
 
     go test -bench BenchmarkConnReadWriteTCP -benchmem
 
-    BenchmarkConnReadWriteTCP_1K_C1-8      50000         31044 ns/op        4064 B/op         32 allocs/op
-    BenchmarkConnReadWriteTCP_1K_C8-8      50000         31911 ns/op        4062 B/op         32 allocs/op
-    BenchmarkConnReadWriteTCP_1K_C64-8     50000         31298 ns/op        4039 B/op         32 allocs/op
-    BenchmarkConnReadWriteTCP_1K_C512-8    50000         31233 ns/op        3862 B/op         30 allocs/op
+    BenchmarkConnReadWriteTCP_1K_C1-8      50000         30090 ns/op        4065 B/op         32 allocs/op
+    BenchmarkConnReadWriteTCP_1K_C8-8      50000         30610 ns/op        4062 B/op         32 allocs/op
+    BenchmarkConnReadWriteTCP_1K_C64-8     50000         30673 ns/op        4040 B/op         32 allocs/op
+    BenchmarkConnReadWriteTCP_1K_C512-8   100000         30715 ns/op        3965 B/op         31 allocs/op
 

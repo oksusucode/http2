@@ -11,9 +11,6 @@ import (
 	"time"
 )
 
-func Test(t *testing.T) {
-}
-
 func BenchmarkConnReadWriteTCP_1K_C1(b *testing.B) {
 	benchmarkConnReadWrite(b, false, 1024, 1)
 }
@@ -125,12 +122,7 @@ func (c *conn) serve() {
 }
 
 func (c *conn) writeBytes(streamID uint32, n int) (err error) {
-	if streamID == 0 {
-		if streamID, err = c.NextStreamID(); err != nil {
-			return
-		}
-	}
-	err = c.WriteFrame(&HeadersFrame{streamID, nil, Priority{}, 0, n == 0})
+	err = c.WriteFrame(&HeadersFrame{StreamID: streamID, EndStream: n == 0})
 	if n > 0 && err == nil {
 		if err = c.WriteFrame(&DataFrame{streamID, bytes.NewBuffer(make([]byte, n)), n, 0, true}); err == nil {
 			atomic.AddInt64(&c.tx, int64(n))
