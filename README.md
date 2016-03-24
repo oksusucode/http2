@@ -13,7 +13,16 @@ It is useful for client/server application development using the HTTP/2 connecti
 - [x] Multiplexing without head-of-line blocking
 - [x] Graceful Shutdown
 
+## Requirements
+
+- Golang 1.5+
+
+## Installation
+
+    go get github.com/nekolunar/http2
+
 ## Documentation
+
 - [API Reference](https://godoc.org/github.com/nekolunar/http2)
 
 ## Benchmarks
@@ -41,3 +50,6 @@ It is useful for client/server application development using the HTTP/2 connecti
     BenchmarkConnReadWriteTCP_1K_C64-8     50000         30673 ns/op        4040 B/op         32 allocs/op
     BenchmarkConnReadWriteTCP_1K_C512-8   100000         30715 ns/op        3965 B/op         31 allocs/op
 
+## License
+
+MIT license. See [LICENSE](https://github.com/nekolunar/http2/blob/master/LICENSE) for details.
