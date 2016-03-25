@@ -24,6 +24,7 @@ It is useful for client/server application development using the HTTP/2 connecti
 ## Documentation
 
 - [API Reference](https://godoc.org/github.com/nekolunar/http2)
+- [Example](https://github.com/nekolunar/http2/blob/master/conn_test.go#L94-L132)
 
 ## Benchmarks
 
