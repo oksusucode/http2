@@ -167,7 +167,7 @@ func pipe(overTLS bool) (server *Conn, client *Conn) {
 		}()
 		break
 	}
-	c, err := net.Dial("tcp", addr.String())
+	c, err := (&net.Dialer{Timeout: 1 * time.Second}).Dial("tcp", addr.String())
 	if err != nil {
 		panic(err)
 	}
