@@ -293,7 +293,7 @@ fail:
 
 	if !hijacked {
 		h, _ := requestToHeader(upgrade, true)
-		headers := &HeadersFrame{1, h, Priority{}, 0, upgrade.ContentLength > 0 && upgrade.Body == nil}
+		headers := &HeadersFrame{1, h, Priority{}, 0, upgrade.ContentLength <= 0}
 		c.upgradeFrames = make([]Frame, 0, 2)
 		c.upgradeFrames = append(c.upgradeFrames, headers)
 		if !headers.EndStream {
