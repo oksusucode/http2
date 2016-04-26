@@ -510,6 +510,7 @@ func (c *Conn) Close() error {
 	return c.CloseTimeout(defaultCloseTimeout)
 }
 
+// ErrClosed represents connection already closed error.
 var ErrClosed = errors.New("http2: connection has been closed")
 
 // CloseTimeout closes this connection by sending GOAWAY
@@ -784,6 +785,11 @@ again:
 			}
 			goto again
 		}
+
+		// if dataLen == 0 {
+		// 	_, err = stream.transition(true, FrameData, v.EndStream)
+		// 	break
+		// }
 
 		if _, err = stream.transition(true, FrameData, false); err != nil {
 			switch err.(type) {

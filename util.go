@@ -65,6 +65,7 @@ func (e StreamErrorList) Error() string {
 	return fmt.Sprintf("%s (and %d more stream errors)", e[0], len(e)-1)
 }
 
+// Err returns the error.
 func (e StreamErrorList) Err() error {
 	if len(e) == 0 {
 		return nil
@@ -95,18 +96,22 @@ func (id SettingID) String() string {
 	}
 }
 
+// HeaderTableSize returns the SettingHeaderTableSize value.
 func (s Settings) HeaderTableSize() uint32 {
 	return s.Value(SettingHeaderTableSize)
 }
 
+// SetHeaderTableSize sets the SettingHeaderTableSize value.
 func (s *Settings) SetHeaderTableSize(value uint32) error {
 	return s.SetValue(SettingHeaderTableSize, value)
 }
 
+// PushEnabled returns the SettingEnablePush value.
 func (s Settings) PushEnabled() bool {
 	return s.Value(SettingEnablePush) != 0
 }
 
+// SetPushEnabled sets the SettingEnablePush value.
 func (s *Settings) SetPushEnabled(enabled bool) error {
 	var value uint32
 	if enabled {
@@ -115,38 +120,48 @@ func (s *Settings) SetPushEnabled(enabled bool) error {
 	return s.SetValue(SettingEnablePush, value)
 }
 
+// MaxConcurrentStreams returns the SettingMaxConcurrentStreams value.
 func (s Settings) MaxConcurrentStreams() uint32 {
 	return s.Value(SettingMaxConcurrentStreams)
 }
 
+// SetMaxConcurrentStreams sets the SettingMaxConcurrentStreams value.
 func (s *Settings) SetMaxConcurrentStreams(value uint32) error {
 	return s.SetValue(SettingMaxConcurrentStreams, value)
 }
 
+// InitialWindowSize returns the SettingInitialWindowSize value.
 func (s Settings) InitialWindowSize() uint32 {
 	return s.Value(SettingInitialWindowSize)
 }
 
+// SetInitialWindowSize sets the SettingInitialWindowSize value.
 func (s *Settings) SetInitialWindowSize(value uint32) error {
 	return s.SetValue(SettingInitialWindowSize, value)
 }
 
+// MaxFrameSize returns the SettingMaxFrameSize value.
 func (s Settings) MaxFrameSize() uint32 {
 	return s.Value(SettingMaxFrameSize)
 }
 
+// SetMaxFrameSize sets the SettingMaxFrameSize value.
 func (s *Settings) SetMaxFrameSize(value uint32) error {
 	return s.SetValue(SettingMaxFrameSize, value)
 }
 
+// MaxHeaderListSize returns the SettingMaxHeaderListSize value.
 func (s Settings) MaxHeaderListSize() uint32 {
 	return s.Value(SettingMaxHeaderListSize)
 }
 
+// SetMaxHeaderListSize sets the SettingMaxHeaderListSize value.
 func (s *Settings) SetMaxHeaderListSize(value uint32) error {
 	return s.SetValue(SettingMaxHeaderListSize, value)
 }
 
+// Value returns the setting value for the given setting ID.
+// If not present, returns default value.
 func (s Settings) Value(id SettingID) uint32 {
 	if v, exists := s.value(id); exists {
 		return v
@@ -169,6 +184,7 @@ func (s Settings) Value(id SettingID) uint32 {
 	}
 }
 
+// SetValue sets the setting value for the given setting ID.
 func (s *Settings) SetValue(id SettingID, value uint32) error {
 	ok := true
 	switch id {
@@ -308,46 +324,57 @@ func (state StreamState) String() string {
 	}
 }
 
+// Method returns the method header.
 func (h Header) Method() string {
 	return h.get(":method")
 }
 
+// SetMethod sets the method header.
 func (h Header) SetMethod(value string) {
 	h[":method"] = []string{value}
 }
 
+// Scheme returns the scheme header.
 func (h Header) Scheme() string {
 	return h.get(":scheme")
 }
 
+// SetScheme sets the scheme header.
 func (h Header) SetScheme(value string) {
 	h[":scheme"] = []string{value}
 }
 
+// Authority returns the authority header.
 func (h Header) Authority() string {
 	return h.get(":authority")
 }
 
+// SetAuthority sets the authority header.
 func (h Header) SetAuthority(value string) {
 	h[":authority"] = []string{value}
 }
 
+// Path returns the path header.
 func (h Header) Path() string {
 	return h.get(":path")
 }
 
+// SetPath sets the path header.
 func (h Header) SetPath(value string) {
 	h[":path"] = []string{value}
 }
 
+// Status returns the status header.
 func (h Header) Status() string {
 	return h.get(":status")
 }
 
+// SetStatus sets the status header.
 func (h Header) SetStatus(value string) {
 	h[":status"] = []string{value}
 }
 
+// Add adds the header value for the given header key.
 func (h Header) Add(key, value string) {
 	if key[0] != ':' {
 		key = CanonicalHTTP2HeaderKey(key)
@@ -355,10 +382,12 @@ func (h Header) Add(key, value string) {
 	}
 }
 
+// Set sets the header value for the given header key.
 func (h Header) Set(key, value string) {
 	h[CanonicalHTTP2HeaderKey(key)] = []string{value}
 }
 
+// Get return the header value for the given header key.
 func (h Header) Get(key string) string {
 	if h == nil {
 		return ""
@@ -370,10 +399,12 @@ func (h Header) Get(key string) string {
 	return v[0]
 }
 
+// Del removes the header value for the given header key.
 func (h Header) Del(key string) {
 	delete(h, CanonicalHTTP2HeaderKey(key))
 }
 
+// Len returns the number of header values in header.
 func (h Header) Len() (n int) {
 	if h == nil {
 		return
@@ -495,6 +526,8 @@ func requestToHeader(req *http.Request, skipVerify bool) (Header, error) {
 	return h, nil
 }
 
+// CanonicalHTTP2HeaderKey returns the canonical format of the
+// header key s.
 func CanonicalHTTP2HeaderKey(s string) string {
 	if v, ok := commonHeader[s]; ok {
 		return v
