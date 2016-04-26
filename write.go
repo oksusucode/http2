@@ -60,7 +60,7 @@ func (f *DataFrame) writeTo(w *frameWriter) error {
 
 		padLen := w.maxFrameSize - dataLen
 		if padLen > 0 {
-			padLen -= 1
+			padLen--
 		}
 		if padLen > padding {
 			padLen = padding
@@ -149,7 +149,7 @@ func (f *HeadersFrame) writeTo(w *frameWriter) error {
 
 	w.hpackBuf = w.hpackBuf[:0]
 
-	for k, _ := range pseudoHeader {
+	for k := range pseudoHeader {
 		if vv, ok := f.Header[k]; ok {
 			if len(vv) > 1 {
 				return errMalformedHeader
@@ -346,7 +346,7 @@ func (f *PushPromiseFrame) writeTo(w *frameWriter) error {
 
 	w.hpackBuf = w.hpackBuf[:0]
 
-	for k, _ := range pseudoHeader {
+	for k := range pseudoHeader {
 		if vv, ok := f.Header[k]; ok {
 			if len(vv) > 1 {
 				return errMalformedHeader
