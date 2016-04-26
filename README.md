@@ -37,10 +37,10 @@ It is useful for client/server application development using the HTTP/2 connecti
 
     go test -bench BenchmarkConnReadWriteTLS -benchmem
 
-    BenchmarkConnReadWriteTLS_1K_C1-8      30000         47584 ns/op        4594 B/op         60 allocs/op
-    BenchmarkConnReadWriteTLS_1K_C8-8      30000         46660 ns/op        4582 B/op         59 allocs/op
-    BenchmarkConnReadWriteTLS_1K_C64-8     30000         46424 ns/op        4540 B/op         59 allocs/op
-    BenchmarkConnReadWriteTLS_1K_C512-8    50000         45797 ns/op        4303 B/op         57 allocs/op
+    BenchmarkConnReadWriteTLS_1K_C1-8      50000         33666 ns/op        4083 B/op         32 allocs/op
+    BenchmarkConnReadWriteTLS_1K_C8-8      50000         34544 ns/op        4080 B/op         32 allocs/op
+    BenchmarkConnReadWriteTLS_1K_C64-8     50000         34277 ns/op        4058 B/op         32 allocs/op
+    BenchmarkConnReadWriteTLS_1K_C512-8    50000         33966 ns/op        3880 B/op         30 allocs/op
 
 #### HTTP/2 over TCP (Upgrade)
 
